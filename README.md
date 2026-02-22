@@ -7,7 +7,7 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 ## Supported Protocols / Endpoints
 
 - WebSocket transport (`ws`)
-- Server-side endpoint (runtime implementation pending)
+- Server-side endpoint (MVP implementation)
 
 ## Network Exposure
 
@@ -22,7 +22,10 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 
 ## Known Issues
 
-- Current state is a compile-verified skeleton without production WS runtime.
+- MVP scope only:
+  - No auth/session enforcement yet.
+  - No event streaming yet (`event.*` forwarding pending).
+  - Async command routing currently supports `cmd.channel.invoke`.
 
 ## License
 
@@ -39,8 +42,10 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 ### Features
 
 - Qt plugin implementing `phicore::transport::TransportInterface`
+- Dedicated WebSocket server with configurable `host`/`port`
+- JSON envelope parsing (`type/topic/cid/payload`)
+- ACK + async result correlation (`cmdId -> socket/cid/cmdTopic`)
 - Lifecycle hooks: `start`, `stop`, `reloadConfig`
-- Config validation for `port`
 
 ### Runtime Model
 
@@ -54,7 +59,27 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 
 ### Protocol Contract
 
-- Pending implementation for command envelope and ACK/result flow mapping.
+Currently implemented topics:
+
+- Sync:
+  - `sync.hello.get`
+  - `sync.ping.get`
+- Cmd (sync-style response via core facade):
+  - `cmd.adapters.list`
+  - `cmd.devices.list`
+  - `cmd.rooms.list`
+  - `cmd.groups.list`
+  - `cmd.scenes.list`
+  - `cmd.adapters.factories.list`
+- Cmd (async ACK + later result):
+  - `cmd.channel.invoke`
+
+Response topics used by this plugin:
+
+- `sync.response`
+- `cmd.ack`
+- `cmd.response`
+- `protocol.error`
 
 ### Runtime Requirements
 
@@ -64,7 +89,7 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 ### Build Requirements
 
 - CMake 3.21+
-- Qt 6 Core
+- Qt 6 Core + WebSockets
 - C++20 compiler
 
 ### Configuration

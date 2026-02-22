@@ -12,7 +12,7 @@ set(CMAKE_AUTOMOC ON)
 
 include(GNUInstallDirs)
 
-find_package(Qt6 REQUIRED COMPONENTS Core)
+find_package(Qt6 REQUIRED COMPONENTS Core WebSockets)
 find_package(phi-transport-api CONFIG QUIET)
 
 if(NOT TARGET phicore::transport-api AND NOT TARGET phi_transport_api)
@@ -40,6 +40,7 @@ add_library(phi_transport_ws MODULE
 target_link_libraries(phi_transport_ws
     PRIVATE
         Qt6::Core
+        Qt6::WebSockets
         ${PHI_TRANSPORT_API_TARGET}
 )
 

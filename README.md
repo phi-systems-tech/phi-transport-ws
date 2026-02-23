@@ -74,15 +74,6 @@ Currently implemented command topics (via `TransportCoreFacade`):
   - `sync.auth.bootstrap.set`
   - `sync.auth.login.set`
   - `sync.auth.logout.set`
-  - `sync.settings.get`
-  - `sync.settings.set`
-  - `sync.settings.user.get`
-  - `sync.settings.user.set`
-  - `sync.users.enabled.set`
-  - `sync.users.flags.set`
-  - `sync.users.delete.set`
-  - `sync.tr.get`
-  - `sync.tr.set`
 - Cmd handled async (`cmd.ack` + later `cmd.response`)
   - `cmd.channel.invoke`
   - `cmd.device.effect.invoke`
@@ -93,6 +84,15 @@ Currently implemented command topics (via `TransportCoreFacade`):
   - `cmd.adapter.reload`
   - `cmd.adapter.start`
   - `cmd.adapter.stop`
+  - `cmd.settings.get`
+  - `cmd.settings.set`
+  - `cmd.settings.user.get`
+  - `cmd.settings.user.set`
+  - `cmd.users.enabled.set`
+  - `cmd.users.flags.set`
+  - `cmd.users.delete.set`
+  - `cmd.tr.get`
+  - `cmd.tr.set`
 - Cmd currently handled sync-style in core facade (accepted via `cmd.*` prefix; immediate `cmd.response`)
   - `cmd.users.list`
   - `cmd.adapters.list`
@@ -125,18 +125,6 @@ Currently implemented command topics (via `TransportCoreFacade`):
   - `cmd.adapter.action.layout.get`
   - `cmd.adapter.update`
   - `cmd.adapter.delete`
-
-Compatibility aliases currently accepted in `TransportCoreFacade` (legacy command spelling):
-
-- `cmd.settings.get`
-- `cmd.settings.set`
-- `cmd.settings.user.get`
-- `cmd.settings.user.set`
-- `cmd.users.enabled.set`
-- `cmd.users.flags.set`
-- `cmd.users.delete.set`
-- `cmd.tr.get`
-- `cmd.tr.set`
 
 Response topics used by this plugin:
 

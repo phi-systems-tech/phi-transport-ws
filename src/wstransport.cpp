@@ -1,6 +1,7 @@
 #include "wstransport.h"
 
 #include <QHostAddress>
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLoggingCategory>
@@ -14,6 +15,7 @@ namespace phicore::transport::ws {
 namespace {
 
 constexpr quint16 kDefaultPort = 5042;
+constexpr const char kTypeEvent[] = "event";
 constexpr const char kTypeCmd[] = "cmd";
 constexpr const char kTypeResponse[] = "response";
 constexpr const char kTypeError[] = "error";
@@ -76,6 +78,7 @@ void WsTransport::stop()
         return;
 
     closeAllClients();
+    m_clients.clear();
     m_pendingCommands.clear();
 
     if (m_server) {
@@ -117,6 +120,30 @@ void WsTransport::onCoreAsyncResult(CmdId cmdId, const QJsonObject &payload)
     sendCmdResponse(socket, pending.cid, pending.cmdTopic, payload);
 }
 
+void WsTransport::onCoreEvent(const QString &topic, const QJsonObject &payload)
+{
+    if (topic.trimmed().isEmpty())
+        return;
+    static qint64 s_lastStatsLogMs = 0;
+    static quint64 s_eventsSinceLast = 0;
+    static quint64 s_channelEventsSinceLast = 0;
+    ++s_eventsSinceLast;
+    if (topic == QStringLiteral("event.channel.stateChanged"))
+        ++s_channelEventsSinceLast;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (s_lastStatsLogMs <= 0 || (nowMs - s_lastStatsLogMs) >= 5000) {
+        qCInfo(wsTransportLog).noquote()
+            << QStringLiteral("WS broadcast stats: clients=%1 events=%2 channelEvents=%3")
+                   .arg(m_clients.size())
+                   .arg(static_cast<qulonglong>(s_eventsSinceLast))
+                   .arg(static_cast<qulonglong>(s_channelEventsSinceLast));
+        s_eventsSinceLast = 0;
+        s_channelEventsSinceLast = 0;
+        s_lastStatsLogMs = nowMs;
+    }
+    broadcastEvent(topic, payload);
+}
+
 void WsTransport::onNewConnection()
 {
     if (!m_server)
@@ -126,6 +153,12 @@ void WsTransport::onNewConnection()
         QWebSocket *socket = m_server->nextPendingConnection();
         if (!socket)
             continue;
+        m_clients.insert(socket);
+        qCInfo(wsTransportLog).noquote()
+            << QStringLiteral("WS client connected: %1:%2 total=%3")
+                   .arg(socket->peerAddress().toString())
+                   .arg(socket->peerPort())
+                   .arg(m_clients.size());
         connect(socket, &QWebSocket::textMessageReceived,
                 this, &WsTransport::onTextMessageReceived);
         connect(socket, &QWebSocket::disconnected,
@@ -138,6 +171,13 @@ void WsTransport::onSocketDisconnected()
     auto *socket = qobject_cast<QWebSocket *>(sender());
     if (!socket)
         return;
+
+    m_clients.remove(socket);
+    qCInfo(wsTransportLog).noquote()
+        << QStringLiteral("WS client disconnected: %1:%2 total=%3")
+               .arg(socket->peerAddress().toString())
+               .arg(socket->peerPort())
+               .arg(m_clients.size());
 
     for (auto it = m_pendingCommands.begin(); it != m_pendingCommands.end();) {
         if (it.value().socket == socket)
@@ -275,6 +315,9 @@ bool WsTransport::startServer(const QString &host, quint16 port, QString *errorS
     auto *server = new QWebSocketServer(QStringLiteral("phi-transport-ws"),
                                         QWebSocketServer::NonSecureMode,
                                         this);
+    // UI clients request the protocol string "phi-core-ws.v1". Without an
+    // agreed subprotocol, browser WebSocket clients reject the handshake.
+    server->setSupportedSubprotocols({ QStringLiteral("phi-core-ws.v1") });
 
     QHostAddress address;
     const QString normalizedHost = host.trimmed().toLower();
@@ -311,16 +354,14 @@ bool WsTransport::startServer(const QString &host, quint16 port, QString *errorS
 
 void WsTransport::closeAllClients()
 {
-    if (!m_server)
-        return;
-
-    const QList<QWebSocket *> clients = m_server->findChildren<QWebSocket *>(QString(), Qt::FindDirectChildrenOnly);
+    const QList<QWebSocket *> clients = m_clients.values();
     for (QWebSocket *client : clients) {
         if (!client)
             continue;
         client->close();
         client->deleteLater();
     }
+    m_clients.clear();
 }
 
 void WsTransport::sendEnvelope(QWebSocket *socket,
@@ -391,6 +432,26 @@ void WsTransport::sendCmdResponse(QWebSocket *socket,
     if (!out.contains(QStringLiteral("error")))
         out.insert(QStringLiteral("error"), QJsonValue::Null);
     sendEnvelope(socket, QString::fromLatin1(kTypeResponse), QString::fromLatin1(kTopicCmdResponse), cid, out);
+}
+
+void WsTransport::sendEvent(QWebSocket *socket,
+                            const QString &topic,
+                            const QJsonObject &payload) const
+{
+    if (!socket || socket->state() != QAbstractSocket::ConnectedState)
+        return;
+
+    QJsonObject env;
+    env.insert(QStringLiteral("type"), QString::fromLatin1(kTypeEvent));
+    env.insert(QStringLiteral("topic"), topic);
+    env.insert(QStringLiteral("payload"), payload);
+    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(env).toJson(QJsonDocument::Compact)));
+}
+
+void WsTransport::broadcastEvent(const QString &topic, const QJsonObject &payload) const
+{
+    for (QWebSocket *client : m_clients)
+        sendEvent(client, topic, payload);
 }
 
 void WsTransport::handleCommand(QWebSocket *socket,

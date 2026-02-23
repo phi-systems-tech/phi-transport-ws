@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QJsonValue>
 
@@ -35,6 +36,7 @@ public:
 
 protected:
     void onCoreAsyncResult(CmdId cmdId, const QJsonObject &payload) override;
+    void onCoreEvent(const QString &topic, const QJsonObject &payload) override;
 
 private slots:
     void onNewConnection();
@@ -81,6 +83,10 @@ private:
                          quint64 cid,
                          const QString &cmdTopic,
                          const QJsonObject &payload) const;
+    void sendEvent(QWebSocket *socket,
+                   const QString &topic,
+                   const QJsonObject &payload) const;
+    void broadcastEvent(const QString &topic, const QJsonObject &payload) const;
     void handleCommand(QWebSocket *socket,
                        quint64 cid,
                        const QString &topic,
@@ -89,6 +95,7 @@ private:
     bool m_running = false;
     QJsonObject m_config;
     QWebSocketServer *m_server = nullptr;
+    QSet<QWebSocket *> m_clients;
     QHash<CmdId, PendingCommand> m_pendingCommands;
 };
 

@@ -23,31 +23,6 @@ constexpr const char kTopicCmdResponse[] = "cmd.response";
 constexpr const char kTopicSyncResponse[] = "sync.response";
 constexpr const char kTopicProtocolError[] = "protocol.error";
 
-constexpr const char kTopicHello[] = "sync.hello.get";
-constexpr const char kTopicPing[] = "sync.ping.get";
-constexpr const char kTopicCmdInvokeChannel[] = "cmd.channel.invoke";
-constexpr const char kTopicCmdListAdapters[] = "cmd.adapters.list";
-constexpr const char kTopicCmdListDevices[] = "cmd.devices.list";
-constexpr const char kTopicCmdListRooms[] = "cmd.rooms.list";
-constexpr const char kTopicCmdListGroups[] = "cmd.groups.list";
-constexpr const char kTopicCmdListScenes[] = "cmd.scenes.list";
-constexpr const char kTopicCmdListAdapterFactories[] = "cmd.adapters.factories.list";
-
-bool isSyncTopic(const QString &topic)
-{
-    return topic == QLatin1String(kTopicHello) || topic == QLatin1String(kTopicPing);
-}
-
-bool isSyncCmdTopic(const QString &topic)
-{
-    return topic == QLatin1String(kTopicCmdListAdapters)
-        || topic == QLatin1String(kTopicCmdListDevices)
-        || topic == QLatin1String(kTopicCmdListRooms)
-        || topic == QLatin1String(kTopicCmdListGroups)
-        || topic == QLatin1String(kTopicCmdListScenes)
-        || topic == QLatin1String(kTopicCmdListAdapterFactories);
-}
-
 } // namespace
 
 WsTransport::WsTransport(QObject *parent)
@@ -423,7 +398,7 @@ void WsTransport::handleCommand(QWebSocket *socket,
                                 const QString &topic,
                                 const QJsonObject &payload)
 {
-    if (isSyncTopic(topic)) {
+    if (topic.startsWith(QStringLiteral("sync."))) {
         const SyncResult result = callCoreSync(topic, payload);
         if (result.accepted) {
             sendSyncResponse(socket, cid, topic, result.payload);
@@ -433,44 +408,57 @@ void WsTransport::handleCommand(QWebSocket *socket,
             out.insert(QStringLiteral("accepted"), false);
             QJsonObject errObj;
             errObj.insert(QStringLiteral("msg"), err);
+            if (result.error.has_value() && !result.error->ctx.isEmpty())
+                errObj.insert(QStringLiteral("ctx"), result.error->ctx);
             out.insert(QStringLiteral("error"), errObj);
             sendSyncResponse(socket, cid, topic, out);
         }
         return;
     }
 
-    if (topic == QLatin1String(kTopicCmdInvokeChannel)) {
-        const AsyncResult submit = callCoreAsync(topic, payload);
-        if (!submit.accepted || submit.cmdId == 0) {
-            const QString err = submit.error.has_value() ? submit.error->msg : QStringLiteral("Command rejected");
-            sendAck(socket, cid, false, topic, err);
-            return;
-        }
+    if (!topic.startsWith(QStringLiteral("cmd."))) {
+        sendProtocolError(socket, cid, QStringLiteral("unknown_topic"),
+                          QStringLiteral("Unknown command topic: %1").arg(topic));
+        return;
+    }
 
+    const AsyncResult asyncSubmit = callCoreAsync(topic, payload);
+    if (asyncSubmit.accepted && asyncSubmit.cmdId > 0) {
         PendingCommand pending;
         pending.socket = socket;
         pending.cid = cid;
         pending.cmdTopic = topic;
-        m_pendingCommands.insert(submit.cmdId, pending);
+        m_pendingCommands.insert(asyncSubmit.cmdId, pending);
         sendAck(socket, cid, true, topic);
         return;
     }
 
-    if (isSyncCmdTopic(topic)) {
-        const SyncResult result = callCoreSync(topic, payload);
-        if (!result.accepted) {
-            const QString err = result.error.has_value() ? result.error->msg : QStringLiteral("Command rejected");
-            sendAck(socket, cid, false, topic, err);
-            return;
-        }
-
+    const SyncResult syncResult = callCoreSync(topic, payload);
+    if (syncResult.accepted) {
         sendAck(socket, cid, true, topic);
-        sendCmdResponse(socket, cid, topic, result.payload);
+        sendCmdResponse(socket, cid, topic, syncResult.payload);
         return;
     }
 
-    sendProtocolError(socket, cid, QStringLiteral("unknown_topic"),
-                      QStringLiteral("Unknown command topic: %1").arg(topic));
+    const bool unknownTopic =
+        asyncSubmit.error.has_value()
+        && syncResult.error.has_value()
+        && asyncSubmit.error->msg == QStringLiteral("Unsupported async topic")
+        && syncResult.error->msg == QStringLiteral("Unsupported sync topic");
+
+    if (unknownTopic) {
+        sendProtocolError(socket, cid, QStringLiteral("unknown_topic"),
+                          QStringLiteral("Unknown command topic: %1").arg(topic));
+        return;
+    }
+
+    const QString errorMsg =
+        syncResult.error.has_value() && !syncResult.error->msg.isEmpty()
+            ? syncResult.error->msg
+            : (asyncSubmit.error.has_value() && !asyncSubmit.error->msg.isEmpty()
+                   ? asyncSubmit.error->msg
+                   : QStringLiteral("Command rejected"));
+    sendAck(socket, cid, false, topic, errorMsg);
 }
 
 } // namespace phicore::transport::ws

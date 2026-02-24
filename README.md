@@ -23,7 +23,6 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 ## Known Issues
 
 - MVP scope only:
-  - No `event.*` forwarding yet (push events from core are still pending in WS transport).
   - No `stream.*` lifecycle emission yet (current discovery returns snapshot payloads).
 
 ## License
@@ -58,80 +57,13 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 
 ### Protocol Contract
 
-Routing rule in `WsTransport`:
-
-- `sync.*` topics are treated as synchronous and routed via `callCoreSync`.
-- `cmd.*` topics are treated as commands:
-  - first `callCoreAsync` (ACK + later `cmd.response` when accepted),
-  - fallback to `callCoreSync` for command topics currently implemented as sync-style in core facade.
-- any other prefix is rejected with `protocol.error` (`unknown_topic`).
-
-Currently implemented command topics (via `TransportCoreFacade`):
-
-- Sync (`sync.*`)
-  - `sync.hello.get`
-  - `sync.ping.get`
-  - `sync.auth.bootstrap.set`
-  - `sync.auth.login.set`
-  - `sync.auth.logout.set`
-- Cmd handled async (`cmd.ack` + later `cmd.response`)
-  - `cmd.channel.invoke`
-  - `cmd.device.effect.invoke`
-  - `cmd.scene.invoke`
-  - `cmd.adapter.action.invoke`
-  - `cmd.adapter.create`
-  - `cmd.adapter.restart`
-  - `cmd.adapter.reload`
-  - `cmd.adapter.start`
-  - `cmd.adapter.stop`
-  - `cmd.settings.get`
-  - `cmd.settings.set`
-  - `cmd.settings.user.get`
-  - `cmd.settings.user.set`
-  - `cmd.users.enabled.set`
-  - `cmd.users.flags.set`
-  - `cmd.users.delete.set`
-  - `cmd.tr.get`
-  - `cmd.tr.set`
-- Cmd currently handled sync-style in core facade (accepted via `cmd.*` prefix; immediate `cmd.response`)
-  - `cmd.users.list`
-  - `cmd.adapters.list`
-  - `cmd.devices.list`
-  - `cmd.rooms.list`
-  - `cmd.groups.list`
-  - `cmd.scenes.list`
-  - `cmd.adapters.factories.list`
-  - `cmd.room.get`
-  - `cmd.group.get`
-  - `cmd.room.create`
-  - `cmd.group.create`
-  - `cmd.scene.create`
-  - `cmd.scene.scope.assign`
-  - `cmd.device.group.set`
-  - `cmd.automations.list`
-  - `cmd.automation.create`
-  - `cmd.automation.update`
-  - `cmd.automation.delete`
-  - `cmd.automation.run`
-  - `cmd.cron.job.list`
-  - `cmd.cron.job.create`
-  - `cmd.cron.job.update`
-  - `cmd.cron.job.delete`
-  - `cmd.device.user.update`
-  - `cmd.channel.user.update`
-  - `cmd.adapters.discover`
-  - `cmd.adapters.discoverAll`
-  - `cmd.adapter.config.layout.get`
-  - `cmd.adapter.action.layout.get`
-  - `cmd.adapter.update`
-  - `cmd.adapter.delete`
-
-Response topics used by this plugin:
-
-- `sync.response`
-- `cmd.ack`
-- `cmd.response`
-- `protocol.error`
+- Canonical cross-transport contract: `phi-transport-api/PROTOCOLL.md`
+- WebSocket-specific supplement for this plugin: `PROTOCOL.md`
+- `WsTransport` routes `sync.*` via `callCoreSync`.
+- `WsTransport` routes `cmd.*` via `callCoreAsync` and falls back to `callCoreSync`
+  if async is not implemented for a command topic.
+- Wire responses used by this plugin: `sync.response`, `cmd.ack`, `cmd.response`,
+  `event.*`, `protocol.error`.
 
 ### Runtime Requirements
 

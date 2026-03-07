@@ -93,8 +93,8 @@ Current validation:
 ### Build
 
 ```bash
-cmake -S . -B build
-cmake --build build --parallel
+cmake -S . -B ../build/phi-transport-ws/release-ninja -G Ninja
+cmake --build ../build/phi-transport-ws/release-ninja --parallel
 ```
 
 Resolution order for `phi-transport-api`:
@@ -104,7 +104,7 @@ Resolution order for `phi-transport-api`:
 ### Installation
 
 ```bash
-cmake --install build
+cmake --install ../build/phi-transport-ws/release-ninja
 ```
 
 - Output module: `libphi_transport_ws.so`

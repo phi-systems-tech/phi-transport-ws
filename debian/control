@@ -1,0 +1,24 @@
+Source: phi-transport-ws
+Section: net
+Priority: optional
+Maintainer: Marius Schumacher <marius.schumacher@phisys.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ ninja-build,
+ qt6-base-dev,
+ qt6-websockets-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://phisys.com
+
+Package: phi-transport-ws
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends}
+Description: PHI WebSocket transport plugin for phi-core
+ WebSocket transport module for phi-core.
+ .
+ This package installs:
+  * libphi_transport_ws.so transport plugin

@@ -1,0 +1,5 @@
+phi-transport-ws (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian package for WebSocket transport plugin.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 07 Mar 2026 10:25:00 +0100

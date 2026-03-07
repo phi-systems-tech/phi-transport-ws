@@ -23,7 +23,7 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 ## Known Issues
 
 - MVP scope only:
-  - No `stream.*` lifecycle emission yet (current discovery returns snapshot payloads).
+  - Stream kinds beyond `adapter.discover` are not implemented yet.
 
 ## License
 
@@ -60,10 +60,9 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 - Canonical cross-transport contract: `phi-transport-api/PROTOCOLL.md`
 - WebSocket-specific supplement for this plugin: `PROTOCOL.md`
 - `WsTransport` routes `sync.*` via `callCoreSync`.
-- `WsTransport` routes `cmd.*` via `callCoreAsync` and falls back to `callCoreSync`
-  if async is not implemented for a command topic.
+- `WsTransport` routes `cmd.*` only via `callCoreAsync` (strict v1, no sync fallback).
 - Wire responses used by this plugin: `sync.response`, `cmd.ack`, `cmd.response`,
-  `event.*`, `protocol.error`.
+  `event.*`, `stream.*`, `protocol.error`.
 
 ### Runtime Requirements
 

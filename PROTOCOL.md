@@ -41,9 +41,9 @@ Validation rules:
   - routed via `callCoreSync`
   - success response topic: `sync.response`
 - `cmd.*` topics:
-  - first routed via `callCoreAsync`
-  - if accepted with `cmdId`: emit `cmd.ack` then later `cmd.response`
-  - fallback path: if async is unsupported but sync supports the topic, transport emits `cmd.ack` then immediate `cmd.response`
+  - routed only via `callCoreAsync` (no sync fallback)
+  - accepted request: emit `cmd.ack` then later `cmd.response` with same `cid`
+  - rejected request: emit `cmd.ack` with `accepted=false`
 - unknown topic prefix:
   - emit `protocol.error` with code `unknown_topic`
 
@@ -53,6 +53,7 @@ Validation rules:
 - `cmd.ack`
 - `cmd.response`
 - `event.*` (forwarded core events)
+- `stream.*` (forwarded core stream lifecycle/events)
 - `protocol.error`
 
 ## `protocol.error` Codes (current implementation)
@@ -65,5 +66,5 @@ Validation rules:
 
 ## Notes
 
-- `cmd.*` wire semantics remain ACK + response, even when a command is served by sync fallback internally.
-- Stream topics (`stream.*`) are defined by transport contract but are not fully implemented in current WS plugin behavior.
+- `cmd.*` uses strict async semantics in v1: `cmd.ack` (accepted/rejected), and
+  for accepted commands exactly one later `cmd.response`.

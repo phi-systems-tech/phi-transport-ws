@@ -494,31 +494,10 @@ void WsTransport::handleCommand(QWebSocket *socket,
         return;
     }
 
-    const SyncResult syncResult = callCoreSync(topic, payload);
-    if (syncResult.accepted) {
-        sendAck(socket, cid, true, topic);
-        sendCmdResponse(socket, cid, topic, syncResult.payload);
-        return;
-    }
-
-    const bool unknownTopic =
-        asyncSubmit.error.has_value()
-        && syncResult.error.has_value()
-        && asyncSubmit.error->msg == QStringLiteral("Unsupported async topic")
-        && syncResult.error->msg == QStringLiteral("Unsupported sync topic");
-
-    if (unknownTopic) {
-        sendProtocolError(socket, cid, QStringLiteral("unknown_topic"),
-                          QStringLiteral("Unknown command topic: %1").arg(topic));
-        return;
-    }
-
     const QString errorMsg =
-        syncResult.error.has_value() && !syncResult.error->msg.isEmpty()
-            ? syncResult.error->msg
-            : (asyncSubmit.error.has_value() && !asyncSubmit.error->msg.isEmpty()
-                   ? asyncSubmit.error->msg
-                   : QStringLiteral("Command rejected"));
+        asyncSubmit.error.has_value() && !asyncSubmit.error->msg.isEmpty()
+            ? asyncSubmit.error->msg
+            : QStringLiteral("Command rejected");
     sendAck(socket, cid, false, topic, errorMsg);
 }
 

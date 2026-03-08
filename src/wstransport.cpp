@@ -14,7 +14,7 @@ namespace phicore::transport::ws {
 
 namespace {
 
-constexpr quint16 kDefaultPort = 5042;
+constexpr quint16 kDefaultPort = 5040;
 constexpr const char kTypeEvent[] = "event";
 constexpr const char kTypeCmd[] = "cmd";
 constexpr const char kTypeResponse[] = "response";
@@ -88,20 +88,6 @@ void WsTransport::stop()
     }
 
     m_running = false;
-}
-
-bool WsTransport::reloadConfig(const QJsonObject &config, QString *errorString)
-{
-    if (!isConfigValid(config, errorString))
-        return false;
-
-    if (!m_running) {
-        m_config = config;
-        return true;
-    }
-
-    stop();
-    return start(config, errorString);
 }
 
 void WsTransport::onCoreAsyncResult(CmdId cmdId, const QJsonObject &payload)

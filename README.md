@@ -12,7 +12,11 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 ## Network Exposure
 
 - Target is LAN endpoint for `phi-ui` and compatible clients.
-- Final bind host/port and TLS policy are configured via plugin config.
+- Bind host/port come from the transport config passed in by `phi-core`.
+- `phi-core` resolves that transport config in two layers:
+  - `/etc/phi/transports/ws.json` as the default base config
+  - `/var/lib/phi/transports/ws/current/config.json` as the runtime override
+- The Debian install provides `/etc/phi/transports/ws.json` with the default localhost binding.
 
 ## Authentication & Security
 
@@ -43,7 +47,7 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 - Dedicated WebSocket server with configurable `host`/`port`
 - JSON envelope parsing (`type/topic/cid/payload`)
 - ACK + async result correlation (`cmdId -> socket/cid/cmdTopic`)
-- Lifecycle hooks: `start`, `stop`, `reloadConfig`
+- Lifecycle hooks: `start`, `stop`
 
 ### Runtime Model
 
@@ -77,17 +81,25 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 
 ### Configuration
 
+- Runtime config is passed in by `phi-core`.
+- Transport lifecycle commands are owned by `phi-core`:
+  - `restart` = stop/start with freshly resolved config
+  - `reload` = unload/load plugin binary, then start with freshly resolved config
+
 Minimal config example:
 
 ```json
 {
-  "host": "0.0.0.0",
-  "port": 5022
+  "host": "127.0.0.1",
+  "port": 5040
 }
 ```
 
 Current validation:
-- `port` optional; if present must be `1..65535`.
+- `host` optional; defaults to `127.0.0.1` when omitted.
+- `port` optional; defaults to `5040` when omitted.
+- Default package config path: `/etc/phi/transports/ws.json`
+- Runtime override path: `/var/lib/phi/transports/ws/current/config.json`
 
 ### Build
 

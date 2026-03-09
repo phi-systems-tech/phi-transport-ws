@@ -28,6 +28,9 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 ## Known Issues
 
 - MVP scope only:
+  - Stream start/stop is generic via `cmd.stream.start|stop`, with semantic
+    selection via `kind` (for example `adapter.discover`, `network.discover`,
+    `raw.discover`).
   - Stream kinds beyond `adapter.discover` are not implemented yet.
 
 ## License

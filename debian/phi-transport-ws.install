@@ -1,2 +1,3 @@
 usr/lib/*/phi/plugins/transports/libphi_transport_ws.so
 usr/lib/*/phi/plugins/transports/libphi_transport_ws.so usr/lib/phi/plugins/transports/
+debian/ws.json etc/phi/transports/

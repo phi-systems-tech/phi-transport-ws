@@ -450,11 +450,11 @@ void WsTransport::handleCommand(QWebSocket *socket,
         if (result.accepted) {
             sendSyncResponse(socket, cid, topic, result.payload);
         } else {
-            const QString err = result.error.has_value() ? result.error->msg : QStringLiteral("Sync call rejected");
+            const QString err = result.error.has_value() ? result.error->message : QStringLiteral("Sync call rejected");
             QJsonObject out;
             out.insert(QStringLiteral("accepted"), false);
             QJsonObject errObj;
-            errObj.insert(QStringLiteral("msg"), err);
+            errObj.insert(QStringLiteral("message"), err);
             if (result.error.has_value() && !result.error->ctx.isEmpty())
                 errObj.insert(QStringLiteral("ctx"), result.error->ctx);
             out.insert(QStringLiteral("error"), errObj);
@@ -481,8 +481,8 @@ void WsTransport::handleCommand(QWebSocket *socket,
     }
 
     const QString errorMsg =
-        asyncSubmit.error.has_value() && !asyncSubmit.error->msg.isEmpty()
-            ? asyncSubmit.error->msg
+        asyncSubmit.error.has_value() && !asyncSubmit.error->message.isEmpty()
+            ? asyncSubmit.error->message
             : QStringLiteral("Command rejected");
     sendAck(socket, cid, false, topic, errorMsg);
 }

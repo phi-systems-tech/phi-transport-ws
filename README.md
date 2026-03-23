@@ -127,7 +127,10 @@ cmake --install ../build/phi-transport-ws/release-ninja
 
 ### Observability
 
-- Logging categories and metrics are planned with runtime implementation.
+- Transport runtime logs are emitted as structured `LogEntry` records via the
+  shared `phi-core` logging pipeline.
+- Do not use Qt logging categories as a parallel transport log path.
+- Metrics remain a separate concern and are still planned.
 
 ### Troubleshooting
 

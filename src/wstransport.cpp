@@ -4,11 +4,8 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QLoggingCategory>
 #include <QWebSocket>
 #include <QWebSocketServer>
-
-Q_LOGGING_CATEGORY(wsTransportLog, "phi-transport.ws")
 
 namespace phicore::transport::ws {
 
@@ -67,8 +64,15 @@ bool WsTransport::start(const QJsonObject &config, QString *errorString)
 
     m_config = config;
     m_running = true;
-    qCInfo(wsTransportLog).noquote()
-        << tr("WS transport started on %1:%2").arg(host).arg(port);
+    QJsonObject fields;
+    fields.insert(QStringLiteral("host"), host);
+    fields.insert(QStringLiteral("port"), static_cast<int>(port));
+    writeLog(LogLevel::Info,
+             makeCategory(LogCategory::Transport),
+             QByteArrayLiteral("WS transport started on %1:%2"),
+             QVariantList{host, static_cast<int>(port)},
+             QByteArrayLiteral("ws.start"),
+             fields);
     return true;
 }
 
@@ -115,14 +119,21 @@ void WsTransport::onCoreEvent(const QString &topic, const QJsonObject &payload)
     static quint64 s_channelEventsSinceLast = 0;
     ++s_eventsSinceLast;
     if (topic == QStringLiteral("event.channel.stateChanged"))
-        ++s_channelEventsSinceLast;
+    ++s_channelEventsSinceLast;
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (s_lastStatsLogMs <= 0 || (nowMs - s_lastStatsLogMs) >= 5000) {
-        qCInfo(wsTransportLog).noquote()
-            << QStringLiteral("WS broadcast stats: clients=%1 events=%2 channelEvents=%3")
-                   .arg(m_clients.size())
-                   .arg(static_cast<qulonglong>(s_eventsSinceLast))
-                   .arg(static_cast<qulonglong>(s_channelEventsSinceLast));
+        QJsonObject fields;
+        fields.insert(QStringLiteral("clients"), m_clients.size());
+        fields.insert(QStringLiteral("events"), static_cast<qint64>(s_eventsSinceLast));
+        fields.insert(QStringLiteral("channelEvents"), static_cast<qint64>(s_channelEventsSinceLast));
+        writeLog(LogLevel::Debug,
+                 makeCategory(LogCategory::Transport),
+                 QByteArrayLiteral("WS broadcast stats: clients=%1 events=%2 channelEvents=%3"),
+                 QVariantList{m_clients.size(),
+                              static_cast<qulonglong>(s_eventsSinceLast),
+                              static_cast<qulonglong>(s_channelEventsSinceLast)},
+                 QByteArrayLiteral("ws.broadcastStats"),
+                 fields);
         s_eventsSinceLast = 0;
         s_channelEventsSinceLast = 0;
         s_lastStatsLogMs = nowMs;
@@ -140,11 +151,18 @@ void WsTransport::onNewConnection()
         if (!socket)
             continue;
         m_clients.insert(socket);
-        qCInfo(wsTransportLog).noquote()
-            << QStringLiteral("WS client connected: %1:%2 total=%3")
-                   .arg(socket->peerAddress().toString())
-                   .arg(socket->peerPort())
-                   .arg(m_clients.size());
+        const QString peerAddress = socket->peerAddress().toString();
+        const int peerPort = socket->peerPort();
+        QJsonObject fields;
+        fields.insert(QStringLiteral("peerAddress"), peerAddress);
+        fields.insert(QStringLiteral("peerPort"), peerPort);
+        fields.insert(QStringLiteral("clientCount"), m_clients.size());
+        writeLog(LogLevel::Info,
+                 makeCategory(LogCategory::Transport),
+                 QByteArrayLiteral("WS client connected: %1:%2 total=%3"),
+                 QVariantList{peerAddress, peerPort, m_clients.size()},
+                 QByteArrayLiteral("ws.clientConnected"),
+                 fields);
         connect(socket, &QWebSocket::textMessageReceived,
                 this, &WsTransport::onTextMessageReceived);
         connect(socket, &QWebSocket::disconnected,
@@ -159,11 +177,18 @@ void WsTransport::onSocketDisconnected()
         return;
 
     m_clients.remove(socket);
-    qCInfo(wsTransportLog).noquote()
-        << QStringLiteral("WS client disconnected: %1:%2 total=%3")
-               .arg(socket->peerAddress().toString())
-               .arg(socket->peerPort())
-               .arg(m_clients.size());
+    const QString peerAddress = socket->peerAddress().toString();
+    const int peerPort = socket->peerPort();
+    QJsonObject fields;
+    fields.insert(QStringLiteral("peerAddress"), peerAddress);
+    fields.insert(QStringLiteral("peerPort"), peerPort);
+    fields.insert(QStringLiteral("clientCount"), m_clients.size());
+    writeLog(LogLevel::Info,
+             makeCategory(LogCategory::Transport),
+             QByteArrayLiteral("WS client disconnected: %1:%2 total=%3"),
+             QVariantList{peerAddress, peerPort, m_clients.size()},
+             QByteArrayLiteral("ws.clientDisconnected"),
+             fields);
 
     for (auto it = m_pendingCommands.begin(); it != m_pendingCommands.end();) {
         if (it.value().socket == socket)

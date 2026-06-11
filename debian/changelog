@@ -1,3 +1,9 @@
+phi-transport-ws (0.1.1~git20260611.7f0c1c9-1) trixie; urgency=medium
+
+  * Route WebSocket transport logs through core logging.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 11 Jun 2026 23:27:48 +0200
+
 phi-transport-ws (0.1.0-2) trixie; urgency=medium
 
   * Rebuild package for trixie repository publishing.

@@ -16,7 +16,7 @@ class QWebSocketServer;
 
 namespace phicore::transport::ws {
 
-class WsTransport final : public TransportInterface
+class WsTransport final : public TransportPluginBase
 {
     Q_OBJECT
     Q_PLUGIN_METADATA(IID PHI_TRANSPORT_INTERFACE_IID)
@@ -28,7 +28,6 @@ public:
     QString pluginType() const override;
     QString displayName() const override;
     QString description() const override;
-    QString apiVersion() const override;
 
     bool start(const QJsonObject &config, QString *errorString) override;
     void stop() override;

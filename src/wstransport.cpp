@@ -25,7 +25,7 @@ constexpr const char kTopicProtocolError[] = "protocol.error";
 } // namespace
 
 WsTransport::WsTransport(QObject *parent)
-    : TransportInterface(parent)
+    : TransportPluginBase(parent)
 {
 }
 
@@ -42,11 +42,6 @@ QString WsTransport::displayName() const
 QString WsTransport::description() const
 {
     return QStringLiteral("WebSocket transport plugin for phi-core APIs.");
-}
-
-QString WsTransport::apiVersion() const
-{
-    return QStringLiteral("1.0.0");
 }
 
 bool WsTransport::start(const QJsonObject &config, QString *errorString)

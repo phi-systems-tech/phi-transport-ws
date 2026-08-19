@@ -44,8 +44,14 @@ QString WsTransport::description() const
     return QStringLiteral("WebSocket transport plugin for phi-core APIs.");
 }
 
-bool WsTransport::start(const QJsonObject &config, QString *errorString)
+bool WsTransport::start(std::string_view configJson, QString *errorString)
 {
+    // Config arrives as JSON text; parsed once here, then used as an object as
+    // before.
+    const QJsonObject config =
+        QJsonDocument::fromJson(QByteArray::fromRawData(configJson.data(),
+                                                       static_cast<qsizetype>(configJson.size())))
+            .object();
     if (!isConfigValid(config, errorString))
         return false;
 
@@ -89,7 +95,7 @@ void WsTransport::stop()
     m_running = false;
 }
 
-void WsTransport::onCoreAsyncResult(CmdId cmdId, const QJsonObject &payload)
+void WsTransport::onCoreAsyncResult(CmdId cmdId, std::string_view payloadJson)
 {
     auto it = m_pendingCommands.find(cmdId);
     if (it == m_pendingCommands.end())
@@ -102,19 +108,20 @@ void WsTransport::onCoreAsyncResult(CmdId cmdId, const QJsonObject &payload)
     if (!socket || socket->state() != QAbstractSocket::ConnectedState)
         return;
 
-    sendCmdResponse(socket, pending.cid, pending.cmdTopic, payload);
+    sendCmdResponse(socket, pending.cid, pending.cmdTopic, payloadJson);
 }
 
-void WsTransport::onCoreEvent(const QString &topic, const QJsonObject &payload)
+void WsTransport::onCoreEvent(std::string_view topic, std::string_view payloadJson)
 {
-    if (topic.trimmed().isEmpty())
+    const QString topicText = QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()));
+    if (topicText.trimmed().isEmpty())
         return;
     static qint64 s_lastStatsLogMs = 0;
     static quint64 s_eventsSinceLast = 0;
     static quint64 s_channelEventsSinceLast = 0;
     ++s_eventsSinceLast;
-    if (topic == QStringLiteral("event.channel.stateChanged"))
-    ++s_channelEventsSinceLast;
+    if (topic == std::string_view("event.channel.stateChanged"))
+        ++s_channelEventsSinceLast;
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (s_lastStatsLogMs <= 0 || (nowMs - s_lastStatsLogMs) >= 5000) {
         QJsonObject fields;
@@ -133,7 +140,7 @@ void WsTransport::onCoreEvent(const QString &topic, const QJsonObject &payload)
         s_channelEventsSinceLast = 0;
         s_lastStatsLogMs = nowMs;
     }
-    broadcastEvent(topic, payload);
+    broadcastEvent(topicText, payloadJson);
 }
 
 void WsTransport::onNewConnection()
@@ -234,7 +241,15 @@ void WsTransport::onTextMessageReceived(const QString &message)
         return;
     }
 
-    handleCommand(socket, cid, topic, payload);
+    // The API takes the payload as text; this transport parsed the frame to read the
+    // envelope, so the sub-object is serialized once here. That extra step is the
+    // cost side of the text boundary, and it sits on the command path rather than on
+    // the event path.
+    const QByteArray payloadBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    handleCommand(socket,
+                  cid,
+                  topic,
+                  std::string_view(payloadBytes.constData(), static_cast<std::size_t>(payloadBytes.size())));
 }
 
 bool WsTransport::isConfigValid(const QJsonObject &config, QString *errorString)
@@ -370,21 +385,40 @@ void WsTransport::closeAllClients()
     m_clients.clear();
 }
 
+// The transport's own small payloads (acks, protocol errors) are still built as
+// objects; serialized once right before assembly.
+static JsonText jsonTextOf(const QJsonObject &object)
+{
+    if (object.isEmpty())
+        return emptyJsonObject();
+    const QByteArray bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    return JsonText(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+}
+
 void WsTransport::sendEnvelope(QWebSocket *socket,
                                const QString &type,
                                const QString &topic,
-                               quint64 cid,
-                               const QJsonObject &payload) const
+                               std::optional<quint64> cid,
+                               std::string_view payloadJson) const
 {
     if (!socket || socket->state() != QAbstractSocket::ConnectedState)
         return;
 
-    QJsonObject env;
-    env.insert(QStringLiteral("type"), type);
-    env.insert(QStringLiteral("topic"), topic);
-    env.insert(QStringLiteral("cid"), static_cast<qint64>(cid));
-    env.insert(QStringLiteral("payload"), payload);
-    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(env).toJson(QJsonDocument::Compact)));
+    // Assembled as text: the payload is nested under a key, which needs neither a
+    // parse nor escaping. An event that came from core therefore travels from its
+    // single serialization in core straight to the wire.
+    JsonText out("{");
+    out += jsonField("type", jsonQuoted(type.toUtf8().toStdString()));
+    out += ',';
+    out += jsonField("topic", jsonQuoted(topic.toUtf8().toStdString()));
+    if (cid.has_value()) {
+        out += ',';
+        out += jsonField("cid", std::to_string(*cid));
+    }
+    out += ',';
+    out += jsonField("payload", payloadJson);
+    out += '}';
+    socket->sendTextMessage(QString::fromUtf8(out.data(), static_cast<qsizetype>(out.size())));
 }
 
 void WsTransport::sendProtocolError(QWebSocket *socket,
@@ -411,10 +445,10 @@ void WsTransport::sendProtocolError(QWebSocket *socket,
 void WsTransport::sendSyncResponse(QWebSocket *socket,
                                    quint64 cid,
                                    const QString &syncTopic,
-                                   const QJsonObject &payload) const
+                                   std::string_view payloadJson) const
 {
-    QJsonObject out = payload;
-    out.insert(QStringLiteral("sync"), syncTopic);
+    const JsonText out =
+        withJsonField(payloadJson, "sync", jsonQuoted(syncTopic.toUtf8().toStdString()));
     sendEnvelope(socket, QString::fromLatin1(kTypeResponse), QString::fromLatin1(kTopicSyncResponse), cid, out);
 }
 
@@ -424,51 +458,60 @@ void WsTransport::sendAck(QWebSocket *socket,
                           const QString &cmdTopic,
                           const QString &errorMsg) const
 {
-    const QJsonObject payload = makeAckPayload(accepted, cmdTopic, errorMsg);
-    sendEnvelope(socket, QString::fromLatin1(kTypeResponse), QString::fromLatin1(kTopicCmdAck), cid, payload);
+    sendEnvelope(socket,
+                 QString::fromLatin1(kTypeResponse),
+                 QString::fromLatin1(kTopicCmdAck),
+                 cid,
+                 jsonTextOf(makeAckPayload(accepted, cmdTopic, errorMsg)));
 }
 
 void WsTransport::sendCmdResponse(QWebSocket *socket,
                                   quint64 cid,
                                   const QString &cmdTopic,
-                                  const QJsonObject &payload) const
+                                  std::string_view payloadJson) const
 {
-    QJsonObject out = payload;
+    // The only outbound path that parses: it adds `error: null` *if absent*, and
+    // deciding that from raw text would be a substring guess. Command responses are
+    // user-driven, so one parse here is the cheap side of the trade.
+    QJsonObject out =
+        QJsonDocument::fromJson(QByteArray::fromRawData(payloadJson.data(),
+                                                       static_cast<qsizetype>(payloadJson.size())))
+            .object();
     out.insert(QStringLiteral("cmd"), cmdTopic);
     if (!out.contains(QStringLiteral("error")))
         out.insert(QStringLiteral("error"), QJsonValue::Null);
-    sendEnvelope(socket, QString::fromLatin1(kTypeResponse), QString::fromLatin1(kTopicCmdResponse), cid, out);
+    const QByteArray bytes = QJsonDocument(out).toJson(QJsonDocument::Compact);
+    sendEnvelope(socket,
+                 QString::fromLatin1(kTypeResponse),
+                 QString::fromLatin1(kTopicCmdResponse),
+                 cid,
+                 std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
 }
 
 void WsTransport::sendEvent(QWebSocket *socket,
                             const QString &topic,
-                            const QJsonObject &payload) const
+                            std::string_view payloadJson) const
 {
-    if (!socket || socket->state() != QAbstractSocket::ConnectedState)
-        return;
-
-    QJsonObject env;
-    env.insert(QStringLiteral("type"), QString::fromLatin1(kTypeEvent));
-    env.insert(QStringLiteral("topic"), topic);
-    env.insert(QStringLiteral("payload"), payload);
-    socket->sendTextMessage(QString::fromUtf8(QJsonDocument(env).toJson(QJsonDocument::Compact)));
+    // No cid on events; otherwise the same concatenated envelope.
+    sendEnvelope(socket, QString::fromLatin1(kTypeEvent), topic, std::nullopt, payloadJson);
 }
 
-void WsTransport::broadcastEvent(const QString &topic, const QJsonObject &payload) const
+void WsTransport::broadcastEvent(const QString &topic, std::string_view payloadJson) const
 {
     for (QWebSocket *client : m_clients)
-        sendEvent(client, topic, payload);
+        sendEvent(client, topic, payloadJson);
 }
 
 void WsTransport::handleCommand(QWebSocket *socket,
                                 quint64 cid,
                                 const QString &topic,
-                                const QJsonObject &payload)
+                                std::string_view payloadJson)
 {
+    const std::string topicText = topic.toUtf8().toStdString();
     if (topic.startsWith(QStringLiteral("sync."))) {
-        const SyncResult result = callCoreSync(topic, payload);
+        const SyncResult result = callCoreSync(topicText, payloadJson);
         if (result.accepted) {
-            sendSyncResponse(socket, cid, topic, result.payload);
+            sendSyncResponse(socket, cid, topic, result.payloadJson);
         } else {
             const QString err = result.error.has_value() ? result.error->message : QStringLiteral("Sync call rejected");
             QJsonObject out;
@@ -478,7 +521,11 @@ void WsTransport::handleCommand(QWebSocket *socket,
             if (result.error.has_value() && !result.error->ctx.isEmpty())
                 errObj.insert(QStringLiteral("ctx"), result.error->ctx);
             out.insert(QStringLiteral("error"), errObj);
-            sendSyncResponse(socket, cid, topic, out);
+            const QByteArray bytes = QJsonDocument(out).toJson(QJsonDocument::Compact);
+            sendSyncResponse(socket,
+                             cid,
+                             topic,
+                             std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
         }
         return;
     }
@@ -489,7 +536,7 @@ void WsTransport::handleCommand(QWebSocket *socket,
         return;
     }
 
-    const AsyncResult asyncSubmit = callCoreAsync(topic, payload);
+    const AsyncResult asyncSubmit = callCoreAsync(topicText, payloadJson);
     if (asyncSubmit.accepted && asyncSubmit.cmdId > 0) {
         PendingCommand pending;
         pending.socket = socket;

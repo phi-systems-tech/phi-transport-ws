@@ -6,7 +6,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  ninja-build,
- phi-transport-api-dev (>= 1.1.0),
+ phi-transport-api-dev (>= 1.2.0),
  qt6-base-dev,
  qt6-websockets-dev
 Standards-Version: 4.7.0

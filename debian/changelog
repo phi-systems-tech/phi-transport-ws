@@ -1,3 +1,10 @@
+phi-transport-ws (0.0~git202608192219.0dc6d4b-1) trixie; urgency=medium
+
+  * Derive from the new TransportPluginBase and report kTransportApiVersion, so
+    phi-core's transport version gate accepts this build (F-38).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 19 Aug 2026 22:19:06 +0200
+
 phi-transport-ws (0.1.1~git20260611.7f0c1c9-1) trixie; urgency=medium
 
   * Route WebSocket transport logs through core logging.

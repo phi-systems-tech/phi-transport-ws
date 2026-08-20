@@ -1,5 +1,8 @@
 #include "wstransport.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QHostAddress>
 #include <QDateTime>
 #include <QJsonDocument>
@@ -25,43 +28,51 @@ constexpr const char kTopicProtocolError[] = "protocol.error";
 } // namespace
 
 WsTransport::WsTransport(QObject *parent)
-    : TransportPluginBase(parent)
+    : QObject(parent)
 {
 }
 
-QString WsTransport::pluginType() const
+std::string WsTransport::pluginType() const
 {
-    return QStringLiteral("ws");
+    return "ws";
 }
 
-QString WsTransport::displayName() const
+std::string WsTransport::displayName() const
 {
-    return QStringLiteral("WebSocket");
+    return "WebSocket";
 }
 
-QString WsTransport::description() const
+std::string WsTransport::description() const
 {
-    return QStringLiteral("WebSocket transport plugin for phi-core APIs.");
+    return "WebSocket transport plugin for phi-core APIs.";
 }
 
-bool WsTransport::start(std::string_view configJson, QString *errorString)
+bool WsTransport::start(std::string_view configJson, std::string *errorString)
 {
+    // The private helpers below stay in QString; only the contract is Qt-free,
+    // and converting once here beats threading std::string through them.
+    QString localError;
+    const auto reportError = [&]() {
+        if (errorString)
+            *errorString = localError.toStdString();
+        return false;
+    };
     // Config arrives as JSON text; parsed once here, then used as an object as
     // before.
     const QJsonObject config =
         QJsonDocument::fromJson(QByteArray::fromRawData(configJson.data(),
                                                        static_cast<qsizetype>(configJson.size())))
             .object();
-    if (!isConfigValid(config, errorString))
-        return false;
+    if (!isConfigValid(config, &localError))
+        return reportError();
 
     if (m_running)
         stop();
 
     const QString host = hostFromConfig(config);
     const quint16 port = portFromConfig(config);
-    if (!startServer(host, port, errorString))
-        return false;
+    if (!startServer(host, port, &localError))
+        return reportError();
 
     m_config = config;
     m_running = true;
@@ -561,3 +572,5 @@ void WsTransport::handleCommand(QWebSocket *socket,
 }
 
 } // namespace phicore::transport::ws
+
+PHI_TRANSPORT_PLUGIN(phicore::transport::ws::WsTransport)

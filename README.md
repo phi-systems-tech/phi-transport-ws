@@ -47,7 +47,7 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 
 ### Features
 
-- Qt plugin implementing `phicore::transport::TransportInterface`
+- Shared-object plugin implementing `phicore::transport::TransportInterface` (Qt-free contract; the plugin uses Qt internally)
 - Dedicated WebSocket server with configurable `host`/`port`
 - JSON envelope parsing (`type/topic/cid/payload`)
 - ACK + async result correlation (`cmdId -> socket/cid/cmdTopic`)
@@ -75,7 +75,7 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 ### Runtime Requirements
 
 - `phi-core` with transport plugin loading enabled.
-- `phi-transport-api` compatible with interface IID `tech.phi-systems.phi-core.TransportInterface/1.0`.
+- `phi-transport-api` whose `kTransportApiVersion` matches what phi-core expects; the plugin exports it as `phi_transport_api_version`.
 
 ### Build Requirements
 
@@ -137,7 +137,7 @@ cmake --install ../build/phi-transport-ws/release-ninja
 - CMake cannot find `phi-transport-api`:
   - Install `phi-transport-api-dev` or place repo at `../phi-transport-api`.
 - Plugin does not load:
-  - Verify IID and deployment path under transport plugin directory.
+  - Verify the reported API version and the deployment path under the transport plugin directory.
 
 ### Maintainers
 

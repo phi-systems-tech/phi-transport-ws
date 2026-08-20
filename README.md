@@ -56,7 +56,9 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 ### Runtime Model
 
 - One plugin instance per transport plugin type (`ws`).
-- Intended to run in dedicated transport thread managed by `TransportManager`.
+- Runs on the core-owned transport thread and uses its event loop (PROTOCOLL.md 6.6):
+  the `QWebSocketServer` and every client socket live there. This plugin starts no
+  thread and no event loop of its own.
 
 ### Core Integration Contract
 

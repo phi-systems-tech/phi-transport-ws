@@ -65,15 +65,14 @@ bool WsTransport::start(std::string_view configJson, QString *errorString)
 
     m_config = config;
     m_running = true;
-    QJsonObject fields;
-    fields.insert(QStringLiteral("host"), host);
-    fields.insert(QStringLiteral("port"), static_cast<int>(port));
+    const std::string hostText = host.toStdString();
     writeLog(LogLevel::Info,
              makeCategory(LogCategory::Transport),
-             QByteArrayLiteral("WS transport started on %1:%2"),
-             QVariantList{host, static_cast<int>(port)},
-             QByteArrayLiteral("ws.start"),
-             fields);
+             "WS transport started on %1:%2",
+             {Scalar{hostText}, Scalar{static_cast<std::int64_t>(port)}},
+             "ws.start",
+             jsonObject({{"host", jsonQuoted(hostText)},
+                         {"port", std::to_string(port)}}));
     return true;
 }
 
@@ -125,17 +124,19 @@ void WsTransport::onCoreEvent(std::string_view topic, std::string_view payloadJs
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (s_lastStatsLogMs <= 0 || (nowMs - s_lastStatsLogMs) >= 5000) {
         QJsonObject fields;
-        fields.insert(QStringLiteral("clients"), m_clients.size());
-        fields.insert(QStringLiteral("events"), static_cast<qint64>(s_eventsSinceLast));
-        fields.insert(QStringLiteral("channelEvents"), static_cast<qint64>(s_channelEventsSinceLast));
+        const std::string clients = std::to_string(m_clients.size());
+        const std::string events = std::to_string(s_eventsSinceLast);
+        const std::string channelEvents = std::to_string(s_channelEventsSinceLast);
         writeLog(LogLevel::Debug,
                  makeCategory(LogCategory::Transport),
-                 QByteArrayLiteral("WS broadcast stats: clients=%1 events=%2 channelEvents=%3"),
-                 QVariantList{m_clients.size(),
-                              static_cast<qulonglong>(s_eventsSinceLast),
-                              static_cast<qulonglong>(s_channelEventsSinceLast)},
-                 QByteArrayLiteral("ws.broadcastStats"),
-                 fields);
+                 "WS broadcast stats: clients=%1 events=%2 channelEvents=%3",
+                 {Scalar{static_cast<std::int64_t>(m_clients.size())},
+                  Scalar{static_cast<std::int64_t>(s_eventsSinceLast)},
+                  Scalar{static_cast<std::int64_t>(s_channelEventsSinceLast)}},
+                 "ws.broadcastStats",
+                 jsonObject({{"clients", clients},
+                             {"events", events},
+                             {"channelEvents", channelEvents}}));
         s_eventsSinceLast = 0;
         s_channelEventsSinceLast = 0;
         s_lastStatsLogMs = nowMs;
@@ -155,16 +156,19 @@ void WsTransport::onNewConnection()
         m_clients.insert(socket);
         const QString peerAddress = socket->peerAddress().toString();
         const int peerPort = socket->peerPort();
-        QJsonObject fields;
-        fields.insert(QStringLiteral("peerAddress"), peerAddress);
-        fields.insert(QStringLiteral("peerPort"), peerPort);
-        fields.insert(QStringLiteral("clientCount"), m_clients.size());
+        const std::string peerText = peerAddress.toStdString();
+        const std::string portText = std::to_string(peerPort);
+        const std::string countText = std::to_string(m_clients.size());
         writeLog(LogLevel::Info,
                  makeCategory(LogCategory::Transport),
-                 QByteArrayLiteral("WS client connected: %1:%2 total=%3"),
-                 QVariantList{peerAddress, peerPort, m_clients.size()},
-                 QByteArrayLiteral("ws.clientConnected"),
-                 fields);
+                 "WS client connected: %1:%2 total=%3",
+                 {Scalar{peerText},
+                  Scalar{static_cast<std::int64_t>(peerPort)},
+                  Scalar{static_cast<std::int64_t>(m_clients.size())}},
+                 "ws.clientConnected",
+                 jsonObject({{"peerAddress", jsonQuoted(peerText)},
+                             {"peerPort", portText},
+                             {"clientCount", countText}}));
         connect(socket, &QWebSocket::textMessageReceived,
                 this, &WsTransport::onTextMessageReceived);
         connect(socket, &QWebSocket::disconnected,
@@ -182,15 +186,19 @@ void WsTransport::onSocketDisconnected()
     const QString peerAddress = socket->peerAddress().toString();
     const int peerPort = socket->peerPort();
     QJsonObject fields;
-    fields.insert(QStringLiteral("peerAddress"), peerAddress);
-    fields.insert(QStringLiteral("peerPort"), peerPort);
-    fields.insert(QStringLiteral("clientCount"), m_clients.size());
+    const std::string peerText = peerAddress.toStdString();
+    const std::string portText = std::to_string(peerPort);
+    const std::string countText = std::to_string(m_clients.size());
     writeLog(LogLevel::Info,
              makeCategory(LogCategory::Transport),
-             QByteArrayLiteral("WS client disconnected: %1:%2 total=%3"),
-             QVariantList{peerAddress, peerPort, m_clients.size()},
-             QByteArrayLiteral("ws.clientDisconnected"),
-             fields);
+             "WS client disconnected: %1:%2 total=%3",
+             {Scalar{peerText},
+              Scalar{static_cast<std::int64_t>(peerPort)},
+              Scalar{static_cast<std::int64_t>(m_clients.size())}},
+             "ws.clientDisconnected",
+             jsonObject({{"peerAddress", jsonQuoted(peerText)},
+                         {"peerPort", portText},
+                         {"clientCount", countText}}));
 
     for (auto it = m_pendingCommands.begin(); it != m_pendingCommands.end();) {
         if (it.value().socket == socket)
@@ -513,19 +521,17 @@ void WsTransport::handleCommand(QWebSocket *socket,
         if (result.accepted) {
             sendSyncResponse(socket, cid, topic, result.payloadJson);
         } else {
-            const QString err = result.error.has_value() ? result.error->message : QStringLiteral("Sync call rejected");
-            QJsonObject out;
-            out.insert(QStringLiteral("accepted"), false);
-            QJsonObject errObj;
-            errObj.insert(QStringLiteral("message"), err);
-            if (result.error.has_value() && !result.error->ctx.isEmpty())
-                errObj.insert(QStringLiteral("ctx"), result.error->ctx);
-            out.insert(QStringLiteral("error"), errObj);
-            const QByteArray bytes = QJsonDocument(out).toJson(QJsonDocument::Compact);
-            sendSyncResponse(socket,
-                             cid,
-                             topic,
-                             std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+            // Assembled as text: the error type is Qt-free, so this rejection
+            // payload needs no JSON document either.
+            const std::string err = result.error.has_value()
+                ? result.error->message
+                : std::string("Sync call rejected");
+            const JsonText errObj = (result.error.has_value() && !result.error->ctx.empty())
+                ? jsonObject({{"message", jsonQuoted(err)},
+                              {"ctx", jsonQuoted(result.error->ctx)}})
+                : jsonObject({{"message", jsonQuoted(err)}});
+            const JsonText out = jsonObject({{"accepted", "false"}, {"error", errObj}});
+            sendSyncResponse(socket, cid, topic, out);
         }
         return;
     }
@@ -548,8 +554,8 @@ void WsTransport::handleCommand(QWebSocket *socket,
     }
 
     const QString errorMsg =
-        asyncSubmit.error.has_value() && !asyncSubmit.error->message.isEmpty()
-            ? asyncSubmit.error->message
+        asyncSubmit.error.has_value() && !asyncSubmit.error->message.empty()
+            ? QString::fromStdString(asyncSubmit.error->message)
             : QStringLiteral("Command rejected");
     sendAck(socket, cid, false, topic, errorMsg);
 }

@@ -68,7 +68,9 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 - Canonical cross-transport contract: `phi-transport-api/PROTOCOLL.md`
 - WebSocket-specific supplement for this plugin: `PROTOCOL.md`
 - `WsTransport` routes `sync.*` via `callCoreSync`.
-- `WsTransport` routes `cmd.*` only via `callCoreAsync` (strict v1, no sync fallback).
+- `cmd.*` is routed only via `callCoreAsync` (strict v1, no sync fallback). The rule itself
+  lives in `TransportPluginBase::dispatchCommand` in `phi-transport-api`, together with the
+  envelope and ack shapes, so every transport answers a topic the same way.
 - Wire responses used by this plugin: `sync.response`, `cmd.ack`, `cmd.response`,
   `event.*`, `stream.*`, `protocol.error`.
 

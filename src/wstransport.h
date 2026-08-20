@@ -54,46 +54,32 @@ private:
     };
 
     static bool isConfigValid(const QJsonObject &config, QString *errorString);
-    static bool tryReadCid(const QJsonValue &value, quint64 *cidOut);
     static QString hostFromConfig(const QJsonObject &config);
     static quint16 portFromConfig(const QJsonObject &config);
-    static QJsonObject makeAckPayload(bool accepted,
-                                      const QString &cmdTopic,
-                                      const QString &errorMsg = QString(),
-                                      const QString &errorCode = QStringLiteral("core_error"));
+    // Which JSON shapes a cid may arrive in; what counts as a valid one is the
+    // protocol's answer and lives in the shared header.
+    static std::optional<CmdId> readCid(const QJsonValue &value);
 
     bool startServer(const QString &host, quint16 port, QString *errorString);
     void closeAllClients();
-    // Outbound helpers take JSON text: nesting a payload under "payload" is pure
-    // concatenation, so an event forwarded from core is never re-parsed.
-    void sendEnvelope(QWebSocket *socket,
-                      const QString &type,
-                      const QString &topic,
-                      std::optional<quint64> cid,
-                      std::string_view payloadJson) const;
+    // The one outbound primitive. Envelope and payload shapes come from
+    // envelope.h, so this only puts assembled text on a socket.
+    void send(QWebSocket *socket,
+              std::string_view type,
+              std::string_view topic,
+              std::optional<CmdId> cid,
+              std::string_view payloadJson) const;
     void sendProtocolError(QWebSocket *socket,
-                           std::optional<quint64> cid,
-                           const QString &code,
-                           const QString &message) const;
-    void sendSyncResponse(QWebSocket *socket,
-                          quint64 cid,
-                          const QString &syncTopic,
-                          std::string_view payloadJson) const;
-    void sendAck(QWebSocket *socket,
-                 quint64 cid,
-                 bool accepted,
-                 const QString &cmdTopic,
-                 const QString &errorMsg = QString()) const;
+                           std::optional<CmdId> cid,
+                           std::string_view code,
+                           std::string_view message) const;
     void sendCmdResponse(QWebSocket *socket,
-                         quint64 cid,
+                         CmdId cid,
                          const QString &cmdTopic,
                          std::string_view payloadJson) const;
-    void sendEvent(QWebSocket *socket,
-                   const QString &topic,
-                   std::string_view payloadJson) const;
-    void broadcastEvent(const QString &topic, std::string_view payloadJson) const;
+    void broadcastEvent(std::string_view topic, std::string_view payloadJson) const;
     void handleCommand(QWebSocket *socket,
-                       quint64 cid,
+                       CmdId cid,
                        const QString &topic,
                        std::string_view payloadJson);
 

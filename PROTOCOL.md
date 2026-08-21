@@ -62,6 +62,8 @@ The session lives on the connection, not in the frame.
   topics that need authentication count: pre-auth topics (`sync.ping.get` and
   the rest of the list above) do not extend a session, because core does not
   touch the session for them either, and frames the server pushes never count.
+  A client whose user is present without commanding anything sends
+  `sync.session.touch.set`, which needs a session and does nothing else.
   `sessionIdleSec` absent or `0` means core does not expire sessions, and
   neither does the transport.
 

@@ -1,13 +1,15 @@
 #include "wstransport.h"
 
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QJsonValue>
-#include <QHostAddress>
 #include <QDateTime>
+#include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QJsonParseError>
+#include <QJsonValue>
+#include <QUrl>
 #include <QWebSocket>
+#include <QWebSocketCorsAuthenticator>
 #include <QWebSocketServer>
 
 namespace phicore::transport::ws {
@@ -69,6 +71,7 @@ bool WsTransport::start(std::string_view configJson, std::string *errorString)
         return reportError();
 
     m_config = config;
+    m_allowedOrigins = allowedOriginsFromConfig(config);
     m_running = true;
     const std::string hostText = host.toStdString();
     writeLog(LogLevel::Info,
@@ -188,6 +191,7 @@ void WsTransport::onSocketDisconnected()
         return;
 
     m_clients.remove(socket);
+    m_sessions.remove(socket);
     const QString peerAddress = socket->peerAddress().toString();
     const int peerPort = socket->peerPort();
     QJsonObject fields;
@@ -249,10 +253,17 @@ void WsTransport::onTextMessageReceived(const QString &message)
         return;
     }
 
-    // The frame is already parsed, so the caller's identity is read here rather
-    // than by core digging through a payload it was handed as text.
-    m_pendingToken = payload.value(QStringLiteral("token")).toString().trimmed();
-    m_pendingClientId = payload.value(QStringLiteral("clientId")).toString();
+    // A connection that has not authenticated gets the handshake and the login,
+    // and nothing else. Core would refuse the rest anyway, but a socket that
+    // answers to anyone should not be able to make it do the refusing (F-42).
+    const QString requestClientId = payload.value(QStringLiteral("clientId")).toString();
+    if (!m_sessions.contains(socket) && !isPreAuthTopic(topic)) {
+        sendProtocolError(socket, cid, "unauthenticated",
+                          "Authenticate with sync.auth.login.set before sending this topic.");
+        return;
+    }
+    // Only used to remember a session the client already held when it said hello.
+    const QString requestAuthToken = payload.value(QStringLiteral("authToken")).toString().trimmed();
 
     // The API takes the payload as text; this transport parsed the frame to read the
     // envelope, so the sub-object is serialized once here. That extra step is the
@@ -262,6 +273,8 @@ void WsTransport::onTextMessageReceived(const QString &message)
     handleCommand(socket,
                   *cid,
                   topic,
+                  requestClientId,
+                  requestAuthToken,
                   std::string_view(payloadBytes.constData(), static_cast<std::size_t>(payloadBytes.size())));
 }
 
@@ -291,6 +304,98 @@ std::optional<CmdId> WsTransport::readCid(const QJsonValue &value)
     if (value.isString())
         return cidFromString(value.toString().toStdString());
     return std::nullopt;
+}
+
+QStringList WsTransport::allowedOriginsFromConfig(const QJsonObject &config)
+{
+    QStringList origins;
+    const QJsonValue configured = config.value(QStringLiteral("allowedOrigins"));
+    if (configured.isArray()) {
+        const QJsonArray entries = configured.toArray();
+        for (const QJsonValue &entry : entries) {
+            const QString origin = entry.toString().trimmed();
+            if (!origin.isEmpty())
+                origins.append(origin);
+        }
+    }
+    return origins;
+}
+
+bool WsTransport::isLoopbackOrigin(const QString &origin)
+{
+    // A UI served from the same machine keeps working out of the box, whichever
+    // port a dev server or the packaged UI happens to use. Anything else has to
+    // be named. That is the line between "the operator's own page" and
+    // "whatever site the browser happens to have open".
+    const QUrl url(origin);
+    if (!url.isValid())
+        return false;
+    const QString scheme = url.scheme().toLower();
+    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https"))
+        return false;
+
+    const QString host = url.host().toLower();
+    if (host == QStringLiteral("localhost") || host == QStringLiteral("::1"))
+        return true;
+    const QHostAddress address(host);
+    return !address.isNull() && address.isLoopback();
+}
+
+bool WsTransport::isPreAuthTopic(const QString &topic)
+{
+    // The handshake, the way in, and the way out. Core owns the authoritative
+    // table and refuses anything else anyway; this list exists so an
+    // unauthenticated flood never reaches it in the first place.
+    return topic == QLatin1String("sync.hello.get")
+        || topic == QLatin1String("sync.ping.get")
+        || topic.startsWith(QLatin1String("sync.auth."));
+}
+
+void WsTransport::trackAuthOutcome(QWebSocket *socket,
+                                   const QString &topic,
+                                   const QString &requestClientId,
+                                   const QString &requestAuthToken,
+                                   std::string_view responsePayloadJson)
+{
+    if (!socket)
+        return;
+
+    if (topic == QLatin1String("sync.auth.logout.set")) {
+        m_sessions.remove(socket);
+        return;
+    }
+
+    const bool isLogin = topic == QLatin1String("sync.auth.login.set")
+        || topic == QLatin1String("sync.auth.bootstrap.set")
+        || topic == QLatin1String("sync.hello.get");
+    if (!isLogin)
+        return;
+
+    // The only place this transport looks inside a payload: the session core
+    // just issued is what it has to remember, and it is in the answer.
+    const QJsonObject response =
+        QJsonDocument::fromJson(QByteArray::fromRawData(responsePayloadJson.data(),
+                                                       static_cast<qsizetype>(responsePayloadJson.size())))
+            .object();
+
+    const QString token = response.value(QStringLiteral("token")).toString().trimmed();
+    if (!token.isEmpty()) {
+        ClientSession session;
+        session.token = token;
+        session.clientId = requestClientId;
+        m_sessions.insert(socket, session);
+        return;
+    }
+
+    // hello with an authToken core accepted: the client already had a session.
+    if (topic == QLatin1String("sync.hello.get")
+        && response.value(QStringLiteral("authAccepted")).toBool(false)) {
+        ClientSession session;
+        session.token = requestAuthToken;
+        session.clientId = requestClientId;
+        if (!session.token.isEmpty())
+            m_sessions.insert(socket, session);
+    }
 }
 
 QString WsTransport::hostFromConfig(const QJsonObject &config)
@@ -343,6 +448,35 @@ bool WsTransport::startServer(const QString &host, quint16 port, QString *errorS
             *errorString = err.isEmpty() ? QStringLiteral("Failed to listen on requested host/port") : err;
         return false;
     }
+
+    // A WebSocket handshake is not subject to the same-origin policy, so any page
+    // a browser has open can connect to this port unless the server checks the
+    // Origin itself. Without this, "bound to loopback" protected nothing against
+    // a website the user happened to visit (F-42).
+    connect(server, &QWebSocketServer::originAuthenticationRequired,
+            this, [this](QWebSocketCorsAuthenticator *authenticator) {
+        if (!authenticator)
+            return;
+        const QString origin = authenticator->origin().trimmed();
+        if (origin.isEmpty()) {
+            // No Origin header: not a browser. Command-line clients and services
+            // are unaffected by this check.
+            authenticator->setAllowed(true);
+            return;
+        }
+        if (isLoopbackOrigin(origin) || m_allowedOrigins.contains(origin, Qt::CaseInsensitive)) {
+            authenticator->setAllowed(true);
+            return;
+        }
+        authenticator->setAllowed(false);
+        const std::string originText = origin.toStdString();
+        writeLog(LogLevel::Warn,
+                 makeCategory(LogCategory::Security, true),
+                 "Refused a WebSocket handshake from origin %1; list it under 'allowedOrigins' in the transport config if it is yours",
+                 {Scalar{originText}},
+                 "ws.originRefused",
+                 jsonObject({{"origin", jsonQuoted(originText)}}));
+    });
 
     connect(server, &QWebSocketServer::newConnection,
             this, &WsTransport::onNewConnection);
@@ -412,25 +546,34 @@ void WsTransport::sendCmdResponse(QWebSocket *socket,
 void WsTransport::broadcastEvent(std::string_view topic, std::string_view payloadJson) const
 {
     // No cid on events; otherwise the same envelope as everything else.
-    for (QWebSocket *client : m_clients)
+    //
+    // Events carry live state - channel values, adapter status - so they go only
+    // to sockets that logged in. Otherwise anything that can open a connection
+    // would read the house without ever authenticating, which is the same leak
+    // the command gate closes (F-42).
+    for (QWebSocket *client : m_clients) {
+        if (m_sessions.value(client).token.isEmpty())
+            continue;
         send(client, kEnvelopeTypeEvent, topic, std::nullopt, payloadJson);
+    }
 }
 
 void WsTransport::handleCommand(QWebSocket *socket,
                                 CmdId cid,
                                 const QString &topic,
+                                const QString &requestClientId,
+                                const QString &requestAuthToken,
                                 std::string_view payloadJson)
 {
     // Routing is the protocol's decision, made once in TransportPluginBase. What
     // is left here is what only this transport knows: which client asked, and how
     // to frame the answer.
     //
-    // The identity comes from the frame this transport already parsed. Once this
-    // transport authenticates its own connections (F-42) it should come from the
-    // socket's state instead, and core will not notice the difference - which is
-    // the point of passing it as a parameter (F-60).
-    const std::string sessionToken = m_pendingToken.toStdString();
-    const std::string sessionClientId = m_pendingClientId.toStdString();
+    // The identity comes from the connection, not from the frame: a client cannot
+    // hand itself a session by putting a token in a payload (F-42, F-60).
+    const ClientSession session = m_sessions.value(socket);
+    const std::string sessionToken = session.token.toStdString();
+    const std::string sessionClientId = session.clientId.toStdString();
     CallerIdentity caller;
     if (!sessionToken.empty()) {
         caller.kind = CallerIdentity::Kind::Session;
@@ -438,6 +581,10 @@ void WsTransport::handleCommand(QWebSocket *socket,
         caller.clientId = sessionClientId;
     }
     const CommandOutcome outcome = dispatchCommand(topic.toUtf8().toStdString(), payloadJson, caller);
+
+    // A login, a bootstrap or a hello that core accepted establishes the session
+    // this connection speaks with from now on.
+    trackAuthOutcome(socket, topic, requestClientId, requestAuthToken, outcome.payloadJson);
 
     if (outcome.cmdId > 0) {
         // Core took the command and answers later; the client waits under that id

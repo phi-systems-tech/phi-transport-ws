@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QJsonValue>
 
 #include <optional>
@@ -60,6 +61,17 @@ private:
     // protocol's answer and lives in the shared header.
     static std::optional<CmdId> readCid(const QJsonValue &value);
 
+    static QStringList allowedOriginsFromConfig(const QJsonObject &config);
+    static bool isLoopbackOrigin(const QString &origin);
+    /// True when a socket that has not authenticated may send this topic.
+    static bool isPreAuthTopic(const QString &topic);
+    /// Reads a session out of an auth response and remembers or forgets it.
+    void trackAuthOutcome(QWebSocket *socket,
+                          const QString &topic,
+                          const QString &requestClientId,
+                          const QString &requestAuthToken,
+                          std::string_view responsePayloadJson);
+
     bool startServer(const QString &host, quint16 port, QString *errorString);
     void closeAllClients();
     // The one outbound primitive. Envelope and payload shapes come from
@@ -81,11 +93,20 @@ private:
     void handleCommand(QWebSocket *socket,
                        CmdId cid,
                        const QString &topic,
+                       const QString &requestClientId,
+                       const QString &requestAuthToken,
                        std::string_view payloadJson);
 
-    // Read off the frame currently being handled; see onTextMessageReceived.
-    QString m_pendingToken;
-    QString m_pendingClientId;
+    // What one connection has established. A socket starts unauthenticated and
+    // may only reach the pre-auth topics until it logs in (F-42); after that the
+    // identity comes from here rather than from whatever a frame claims.
+    struct ClientSession {
+        QString token;
+        QString clientId;
+    };
+    QHash<QWebSocket *, ClientSession> m_sessions;
+    QStringList m_allowedOrigins;
+
     bool m_running = false;
     QJsonObject m_config;
     QWebSocketServer *m_server = nullptr;

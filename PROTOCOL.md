@@ -7,6 +7,7 @@ Canonical cross-transport semantics are defined in `phi-transport-api/PROTOCOLL.
 
 - WebSocket handshake and subprotocol requirements
 - Envelope validation behavior implemented by `WsTransport`
+- The per-connection session gate this transport enforces before routing
 - Routing behavior from wire topics to `CoreFacade`
 
 ## Handshake
@@ -14,6 +15,10 @@ Canonical cross-transport semantics are defined in `phi-transport-api/PROTOCOLL.
 - Transport: WebSocket (`ws://` / `wss://`)
 - Subprotocol required by this transport: `phi-core-ws.v1`
 - One WebSocket text frame must contain one JSON object envelope
+- If the handshake carries an `Origin` header, it must be a loopback origin or
+  listed in the transport's `allowedOrigins` config; otherwise the upgrade is
+  answered with `403 Access Forbidden`. Requests without `Origin` (non-browser
+  clients) are not checked.
 
 ## Envelope
 
@@ -34,6 +39,24 @@ Validation rules:
 - `cid` is required and must be numeric (number or numeric string)
 - `topic` is required and must be non-empty
 - payload is read as object; non-object payload values are treated as `{}` by current implementation
+
+## Session Gate
+
+The session lives on the connection, not in the frame.
+
+- A new connection is unauthenticated.
+- While unauthenticated, only these topics are routed to core:
+  - `sync.hello.get`
+  - `sync.ping.get`
+  - `sync.auth.*`
+- Any other topic is answered with `protocol.error` code `unauthenticated` and
+  is never dispatched.
+- A `sync.auth.bootstrap.set`, `sync.auth.login.set` or `sync.hello.get` that
+  core answers with a session token authenticates the connection.
+- From then on, the transport attaches that session identity to every frame it
+  forwards. A token inside a payload does not change the caller identity.
+- `sync.auth.logout.set` returns the connection to the unauthenticated state.
+- `event.*` and `stream.*` frames are pushed only to authenticated connections.
 
 ## Routing
 
@@ -63,6 +86,7 @@ Validation rules:
 - `invalid_type`
 - `missing_topic`
 - `unknown_topic`
+- `unauthenticated`
 
 ## Notes
 

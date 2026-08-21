@@ -18,12 +18,42 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
   - `/var/lib/phi/@1/transports/ws/current/config.json` as the runtime override
 - The `phi-transport-ws` Debian package provides `/etc/phi/@1/transports/ws.json`
   with the default localhost binding.
+- Binding to a non-loopback address makes the endpoint reachable from the LAN
+  (and, behind a forwarding router, from the WAN). Everything behind it is then
+  protected by the login this plugin enforces per connection — see
+  Authentication & Security for the origin allowlist and the TLS statement.
 
 ## Authentication & Security
 
-- Authentication is validated by `phi-core`.
-- Transport plugin forwards auth-relevant payloads to core APIs.
-- TLS handling is planned as part of runtime implementation.
+- This transport owns the client-facing auth boundary. `phi-core` trusts the
+  caller identity this plugin attaches to every frame, so an unauthenticated
+  socket must never reach a privileged topic.
+- Every connection carries its own session. Before a successful login only the
+  pre-auth topics are forwarded to core:
+  - `sync.hello.get`
+  - `sync.ping.get`
+  - `sync.auth.*` (bootstrap, login, logout)
+- Any other topic on an unauthenticated connection is refused by the transport
+  itself with error code `unauthenticated`; the frame is never dispatched.
+- The session token is taken from the connection, not from the frame. A client
+  logs in once per socket; later frames need no token in their payload, and a
+  token in the payload cannot raise another connection's privileges.
+- Browser origins are checked at the WebSocket handshake, which is exempt from
+  the same-origin policy: without this check any web page a LAN user visits
+  could open a socket to this endpoint. Non-browser clients send no `Origin`
+  header and are unaffected.
+  - Default allowlist: loopback origins only (`http(s)://localhost[:port]`,
+    `http(s)://127.0.0.1[:port]`, `http(s)://[::1][:port]`).
+  - Serving `phi-ui` from another host requires listing its origin explicitly
+    in `allowedOrigins` (see Configuration). A refused handshake is answered
+    with `403 Access Forbidden` and logged in the `security` category.
+- Events are pushed only to authenticated connections. Channel values and
+  adapter status are live state; a socket that never logged in sees nothing.
+- Login throttling, password hashing and capability checks live in `phi-core`;
+  this plugin does not cache credentials and stores no password material.
+- TLS is **not** terminated by this plugin. Exposing the endpoint beyond the
+  local host means putting a TLS-terminating reverse proxy in front of it —
+  otherwise session tokens travel in clear text.
 
 ## Known Issues
 
@@ -103,13 +133,18 @@ Minimal config example:
 ```json
 {
   "host": "127.0.0.1",
-  "port": 5040
+  "port": 5040,
+  "allowedOrigins": ["http://phi-box.local:5022"]
 }
 ```
 
 Current validation:
 - `host` optional; defaults to `127.0.0.1` when omitted.
 - `port` optional; defaults to `5040` when omitted.
+- `allowedOrigins` optional array of strings; each entry is one exact origin
+  (scheme, host and — if non-default — port), compared case-insensitively.
+  When omitted, only loopback origins are accepted. Entries are additive: the
+  loopback defaults stay valid. `"*"` is not supported on purpose.
 - Default package config path: `/etc/phi/@1/transports/ws.json`
 - Runtime override path: `/var/lib/phi/@1/transports/ws/current/config.json`
 

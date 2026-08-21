@@ -1,3 +1,20 @@
+phi-transport-ws (0.1.6~git202608211603.5d36625-1) trixie; urgency=medium
+
+  * The connection is the session. A socket starts unauthenticated and may send
+    only the handshake, ping and the auth topics; everything else is refused
+    here with "unauthenticated" and never reaches core. The identity passed to
+    core comes from the connection, not from the frame.
+  * Events go only to authenticated connections. Live channel state used to
+    reach anything that could open a socket.
+  * Browser origins are checked at the handshake, which is exempt from the
+    same-origin policy: loopback always, anything else via allowedOrigins in the
+    transport config, everything else answered with 403.
+  * Idle connections are closed on the budget core states with the session.
+    Pre-auth topics do not extend it, so a keepalive cannot hold a session open.
+  * TLS is stated, not implied: this plugin does not terminate it, so exposing
+    the endpoint beyond the local host means a reverse proxy in front of it.
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 21 Aug 2026 16:03:45 +0200
+
 phi-transport-ws (0.1.5~git202608201904.63780c6-1) trixie; urgency=medium
 
   * Rebuild against phi-transport-api 1.4.0: plain shared-object plugin with

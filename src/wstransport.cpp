@@ -240,10 +240,6 @@ void WsTransport::onTextMessageReceived(const QString &message)
     if (!socket)
         return;
 
-    // Anything the client sends - even a frame this transport goes on to
-    // refuse - is proof that somebody is still there.
-    if (auto session = m_sessions.find(socket); session != m_sessions.end())
-        session->lastActivityMs = QDateTime::currentMSecsSinceEpoch();
 
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &parseError);
@@ -282,6 +278,15 @@ void WsTransport::onTextMessageReceived(const QString &message)
                           "Authenticate with sync.auth.login.set before sending this topic.");
         return;
     }
+    // What counts as activity is what core counts: a call it authorizes, which
+    // is where it touches the session. The pre-auth topics are not that - a
+    // heartbeat says the socket is open, not that anyone is still using it, and
+    // letting it extend the session would make the timeout decorative.
+    if (!isPreAuthTopic(topic)) {
+        if (auto session = m_sessions.find(socket); session != m_sessions.end())
+            session->lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
     // Only used to remember a session the client already held when it said hello.
     const QString requestAuthToken = payload.value(QStringLiteral("authToken")).toString().trimmed();
 

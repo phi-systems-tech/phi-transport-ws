@@ -50,8 +50,10 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
 - Sessions expire. Core states how long a session may sit without a single call
   (`sessionIdleSec`, from the `security.sessionIdleSec` setting) in the answer
   that hands out the token, and this transport closes the connection once that
-  budget passes without a frame from the client. Server pushes do not count as
-  activity - they say nothing about whoever logged in still being there.
+  budget passes without a call from the client. What counts is what core counts:
+  a topic it authorizes, which is where it touches the session. Server pushes do
+  not count, and neither do the pre-auth topics - a heartbeat says the socket is
+  open, not that anyone is still using it.
 - Events are pushed only to authenticated connections. Channel values and
   adapter status are live state; a socket that never logged in sees nothing.
 - Login throttling, password hashing and capability checks live in `phi-core`;

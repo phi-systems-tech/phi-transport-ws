@@ -58,9 +58,12 @@ The session lives on the connection, not in the frame.
 - `sync.auth.logout.set` returns the connection to the unauthenticated state.
 - `event.*` and `stream.*` frames are pushed only to authenticated connections.
 - An answer that establishes a session carries `sessionIdleSec`. The connection
-  is closed once that many seconds pass without a frame from the client; frames
-  the server pushes do not count. `sessionIdleSec` absent or `0` means core does
-  not expire sessions, and neither does the transport.
+  is closed once that many seconds pass without a call from the client. Only
+  topics that need authentication count: pre-auth topics (`sync.ping.get` and
+  the rest of the list above) do not extend a session, because core does not
+  touch the session for them either, and frames the server pushes never count.
+  `sessionIdleSec` absent or `0` means core does not expire sessions, and
+  neither does the transport.
 
 ## Routing
 

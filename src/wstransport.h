@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <QTimer>
 #include <QStringList>
 #include <QJsonValue>
 
@@ -65,6 +66,8 @@ private:
     static bool isLoopbackOrigin(const QString &origin);
     /// True when a socket that has not authenticated may send this topic.
     static bool isPreAuthTopic(const QString &topic);
+    /// Closes the connections whose session has sat idle past its budget.
+    void dropIdleSessions();
     /// Reads a session out of an auth response and remembers or forgets it.
     void trackAuthOutcome(QWebSocket *socket,
                           const QString &topic,
@@ -103,8 +106,15 @@ private:
     struct ClientSession {
         QString token;
         QString clientId;
+        // The clock this connection is judged by: core states the budget when it
+        // hands out the session, and every frame the client sends resets it.
+        // Server pushes do not count - they say nothing about whoever logged in
+        // still being there.
+        qint64 idleBudgetMs = 0;
+        qint64 lastActivityMs = 0;
     };
     QHash<QWebSocket *, ClientSession> m_sessions;
+    QTimer *m_idleSweep = nullptr;
     QStringList m_allowedOrigins;
 
     bool m_running = false;

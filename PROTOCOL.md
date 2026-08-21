@@ -57,6 +57,10 @@ The session lives on the connection, not in the frame.
   forwards. A token inside a payload does not change the caller identity.
 - `sync.auth.logout.set` returns the connection to the unauthenticated state.
 - `event.*` and `stream.*` frames are pushed only to authenticated connections.
+- An answer that establishes a session carries `sessionIdleSec`. The connection
+  is closed once that many seconds pass without a frame from the client; frames
+  the server pushes do not count. `sessionIdleSec` absent or `0` means core does
+  not expire sessions, and neither does the transport.
 
 ## Routing
 

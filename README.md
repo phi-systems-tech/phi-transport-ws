@@ -47,6 +47,11 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
   - Serving `phi-ui` from another host requires listing its origin explicitly
     in `allowedOrigins` (see Configuration). A refused handshake is answered
     with `403 Access Forbidden` and logged in the `security` category.
+- Sessions expire. Core states how long a session may sit without a single call
+  (`sessionIdleSec`, from the `security.sessionIdleSec` setting) in the answer
+  that hands out the token, and this transport closes the connection once that
+  budget passes without a frame from the client. Server pushes do not count as
+  activity - they say nothing about whoever logged in still being there.
 - Events are pushed only to authenticated connections. Channel values and
   adapter status are live state; a socket that never logged in sees nothing.
 - Login throttling, password hashing and capability checks live in `phi-core`;

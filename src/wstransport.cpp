@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <QWebSocket>
 #include <QWebSocketCorsAuthenticator>
+#include <QWebSocketProtocol>
 #include <QWebSocketServer>
 
 namespace phicore::transport::ws {
@@ -20,6 +21,11 @@ namespace {
 // envelope.h - they are protocol surface, and two transports owning a copy each
 // is how the wire drifts.
 constexpr quint16 kDefaultPort = 5040;
+
+// How often idle sessions are looked at. The budget itself comes from core; this
+// only decides how late the close may be, and a few seconds on a timeout counted
+// in minutes is not worth a timer per connection.
+constexpr int kIdleSweepIntervalMs = 5000;
 
 } // namespace
 
@@ -72,6 +78,12 @@ bool WsTransport::start(std::string_view configJson, std::string *errorString)
 
     m_config = config;
     m_allowedOrigins = allowedOriginsFromConfig(config);
+    if (!m_idleSweep) {
+        m_idleSweep = new QTimer(this);
+        m_idleSweep->setInterval(kIdleSweepIntervalMs);
+        connect(m_idleSweep, &QTimer::timeout, this, &WsTransport::dropIdleSessions);
+    }
+    m_idleSweep->start();
     m_running = true;
     const std::string hostText = host.toStdString();
     writeLog(LogLevel::Info,
@@ -89,8 +101,11 @@ void WsTransport::stop()
     if (!m_running && !m_server)
         return;
 
+    if (m_idleSweep)
+        m_idleSweep->stop();
     closeAllClients();
     m_clients.clear();
+    m_sessions.clear();
     m_pendingCommands.clear();
 
     if (m_server) {
@@ -224,6 +239,11 @@ void WsTransport::onTextMessageReceived(const QString &message)
     auto *socket = qobject_cast<QWebSocket *>(sender());
     if (!socket)
         return;
+
+    // Anything the client sends - even a frame this transport goes on to
+    // refuse - is proof that somebody is still there.
+    if (auto session = m_sessions.find(socket); session != m_sessions.end())
+        session->lastActivityMs = QDateTime::currentMSecsSinceEpoch();
 
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &parseError);
@@ -378,11 +398,20 @@ void WsTransport::trackAuthOutcome(QWebSocket *socket,
                                                        static_cast<qsizetype>(responsePayloadJson.size())))
             .object();
 
+    // How long this session may sit idle is core's decision, and it states it in
+    // the same answer that hands out the token (F-42). 0 or absent means core
+    // does not expire sessions, so neither does this transport.
+    const qint64 idleBudgetMs =
+        static_cast<qint64>(response.value(QStringLiteral("sessionIdleSec")).toDouble(0.0)) * 1000;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
     const QString token = response.value(QStringLiteral("token")).toString().trimmed();
     if (!token.isEmpty()) {
         ClientSession session;
         session.token = token;
         session.clientId = requestClientId;
+        session.idleBudgetMs = idleBudgetMs;
+        session.lastActivityMs = nowMs;
         m_sessions.insert(socket, session);
         return;
     }
@@ -393,6 +422,8 @@ void WsTransport::trackAuthOutcome(QWebSocket *socket,
         ClientSession session;
         session.token = requestAuthToken;
         session.clientId = requestClientId;
+        session.idleBudgetMs = idleBudgetMs;
+        session.lastActivityMs = nowMs;
         if (!session.token.isEmpty())
             m_sessions.insert(socket, session);
     }
@@ -483,6 +514,37 @@ bool WsTransport::startServer(const QString &host, quint16 port, QString *errorS
 
     m_server = server;
     return true;
+}
+
+void WsTransport::dropIdleSessions()
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    QList<QWebSocket *> expired;
+    for (auto it = m_sessions.constBegin(); it != m_sessions.constEnd(); ++it) {
+        if (it->idleBudgetMs <= 0)
+            continue;
+        if (nowMs - it->lastActivityMs > it->idleBudgetMs)
+            expired.append(it.key());
+    }
+
+    for (QWebSocket *socket : expired) {
+        const ClientSession session = m_sessions.take(socket);
+        if (!socket)
+            continue;
+        const std::string clientIdText = session.clientId.toStdString();
+        const std::int64_t idleSec = (nowMs - session.lastActivityMs) / 1000;
+        writeLog(LogLevel::Info,
+                 makeCategory(LogCategory::Security),
+                 "Closing an idle connection after %1 s without a call (client '%2')",
+                 {Scalar{idleSec}, Scalar{clientIdText}},
+                 "ws.idleTimeout",
+                 jsonObject({{"idleSec", std::to_string(idleSec)},
+                             {"clientId", jsonQuoted(clientIdText)}}));
+        // Core drops the token on the same clock; this closes the pipe that
+        // would otherwise keep pushing events at a session nobody is watching.
+        socket->close(QWebSocketProtocol::CloseCodeNormal,
+                      QStringLiteral("Session idle timeout"));
+    }
 }
 
 void WsTransport::closeAllClients()

@@ -249,6 +249,11 @@ void WsTransport::onTextMessageReceived(const QString &message)
         return;
     }
 
+    // The frame is already parsed, so the caller's identity is read here rather
+    // than by core digging through a payload it was handed as text.
+    m_pendingToken = payload.value(QStringLiteral("token")).toString().trimmed();
+    m_pendingClientId = payload.value(QStringLiteral("clientId")).toString();
+
     // The API takes the payload as text; this transport parsed the frame to read the
     // envelope, so the sub-object is serialized once here. That extra step is the
     // cost side of the text boundary, and it sits on the command path rather than on
@@ -419,7 +424,20 @@ void WsTransport::handleCommand(QWebSocket *socket,
     // Routing is the protocol's decision, made once in TransportPluginBase. What
     // is left here is what only this transport knows: which client asked, and how
     // to frame the answer.
-    const CommandOutcome outcome = dispatchCommand(topic.toUtf8().toStdString(), payloadJson);
+    //
+    // The identity comes from the frame this transport already parsed. Once this
+    // transport authenticates its own connections (F-42) it should come from the
+    // socket's state instead, and core will not notice the difference - which is
+    // the point of passing it as a parameter (F-60).
+    const std::string sessionToken = m_pendingToken.toStdString();
+    const std::string sessionClientId = m_pendingClientId.toStdString();
+    CallerIdentity caller;
+    if (!sessionToken.empty()) {
+        caller.kind = CallerIdentity::Kind::Session;
+        caller.sessionToken = sessionToken;
+        caller.clientId = sessionClientId;
+    }
+    const CommandOutcome outcome = dispatchCommand(topic.toUtf8().toStdString(), payloadJson, caller);
 
     if (outcome.cmdId > 0) {
         // Core took the command and answers later; the client waits under that id

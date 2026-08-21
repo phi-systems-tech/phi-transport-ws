@@ -70,6 +70,10 @@ Provide the WebSocket transport layer while keeping `phi-core` as the single API
 - Canonical cross-transport contract: `phi-transport-api/PROTOCOLL.md`
 - WebSocket-specific supplement for this plugin: `PROTOCOL.md`
 - `WsTransport` routes `sync.*` via `callCoreSync`.
+- Calls into core carry a `CallerIdentity`: the session token from the frame being handled, or
+  `Anonymous` when the client sent none, in which case core allows only the pre-auth topics. Once
+  this transport authenticates its own connections, the token should come from the connection's
+  state instead - core will not notice the difference, which is why the identity is a parameter.
 - `cmd.*` is routed only via `callCoreAsync` (strict v1, no sync fallback). The rule itself
   lives in `TransportPluginBase::dispatchCommand` in `phi-transport-api`, together with the
   envelope and ack shapes, so every transport answers a topic the same way.

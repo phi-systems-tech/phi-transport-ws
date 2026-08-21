@@ -83,6 +83,9 @@ private:
                        const QString &topic,
                        std::string_view payloadJson);
 
+    // Read off the frame currently being handled; see onTextMessageReceived.
+    QString m_pendingToken;
+    QString m_pendingClientId;
     bool m_running = false;
     QJsonObject m_config;
     QWebSocketServer *m_server = nullptr;

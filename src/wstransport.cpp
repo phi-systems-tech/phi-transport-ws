@@ -275,7 +275,8 @@ void WsTransport::onTextMessageReceived(const QString &message)
     const QString requestClientId = payload.value(QStringLiteral("clientId")).toString();
     if (!m_sessions.contains(socket) && !isPreAuthTopic(topic)) {
         sendProtocolError(socket, cid, "unauthenticated",
-                          "Authenticate with sync.auth.login.set before sending this topic.");
+                          "Authenticate with sync.auth.begin.set and sync.auth.login.set"
+                          " before sending this topic.");
         return;
     }
     // What counts as activity is what core counts: a call it authorizes, which

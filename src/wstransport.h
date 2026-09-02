@@ -1,36 +1,29 @@
 #pragma once
 
-#include <QJsonObject>
-#include <QHash>
-#include <QObject>
-#include <QPointer>
-#include <QSet>
-#include <QString>
-#include <QTimer>
-#include <QStringList>
-#include <QJsonValue>
-
-#include <optional>
-#include <string>
-#include <string_view>
+#include "wsserver.h"
 
 #include <transportinterface.h>
 
-class QHostAddress;
-class QWebSocket;
-class QWebSocketServer;
+#include <nlohmann/json.hpp>
+
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace phicore::transport::ws {
 
-// QObject first, as Qt requires for multiple inheritance. The transport
-// contract itself is Qt-free; this plugin uses Qt for its own I/O, which is its
-// business rather than the contract's.
-class WsTransport final : public QObject, public TransportPluginBase
+// The WS transport on the runtime loop (contract 2.0.0): WsServer speaks
+// RFC 6455 over Loop watches, this class speaks the phi protocol over it.
+// No Qt and no thread of its own - the loop's thread is where everything
+// here runs, including the contract callbacks.
+class WsTransport final : public TransportPluginBase
 {
-    Q_OBJECT
-
 public:
-    explicit WsTransport(QObject *parent = nullptr);
+    WsTransport() = default;
+    ~WsTransport() override;
 
     std::string pluginType() const override;
     std::string displayName() const override;
@@ -43,85 +36,82 @@ protected:
     void onCoreAsyncResult(CmdId cmdId, std::string_view payloadJson) override;
     void onCoreEvent(std::string_view topic, std::string_view payloadJson) override;
 
-private slots:
-    void onNewConnection();
-    void onSocketDisconnected();
-    void onTextMessageReceived(const QString &message);
-
 private:
+    using Json = nlohmann::json;
+    using ConnId = WsServer::ConnId;
+
     struct PendingCommand {
-        QPointer<QWebSocket> socket;
-        quint64 cid = 0;
-        QString cmdTopic;
+        ConnId conn = 0;
+        std::uint64_t cid = 0;
+        std::string cmdTopic;
     };
 
-    static bool isConfigValid(const QJsonObject &config, QString *errorString);
-    static QString hostFromConfig(const QJsonObject &config);
-    static quint16 portFromConfig(const QJsonObject &config);
+    // What one connection has established. A connection starts
+    // unauthenticated and may only reach the pre-auth topics until it logs in
+    // (F-42); after that the identity comes from here rather than from
+    // whatever a frame claims.
+    struct ClientSession {
+        std::string token;
+        std::string clientId;
+        // The clock this connection is judged by: core states the budget when
+        // it hands out the session, and every authorized frame resets it.
+        std::int64_t idleBudgetMs = 0;
+        std::int64_t lastActivityMs = 0;
+    };
+
+    static bool isConfigValid(const Json &config, std::string *errorString);
+    static std::string hostFromConfig(const Json &config);
+    static std::uint16_t portFromConfig(const Json &config);
     // Which JSON shapes a cid may arrive in; what counts as a valid one is the
     // protocol's answer and lives in the shared header.
-    static std::optional<CmdId> readCid(const QJsonValue &value);
+    static std::optional<CmdId> readCid(const Json &value);
+    static std::vector<std::string> allowedOriginsFromConfig(const Json &config);
+    static bool isLoopbackOrigin(const std::string &origin);
+    /// True when a connection that has not authenticated may send this topic.
+    static bool isPreAuthTopic(std::string_view topic);
 
-    static QStringList allowedOriginsFromConfig(const QJsonObject &config);
-    static bool isLoopbackOrigin(const QString &origin);
-    /// True when a socket that has not authenticated may send this topic.
-    static bool isPreAuthTopic(const QString &topic);
+    bool acceptOrigin(const std::string &origin);
+    void onConnected(ConnId id, const std::string &peerAddress, std::uint16_t peerPort);
+    void onDisconnected(ConnId id);
+    void onTextMessage(ConnId id, std::string_view message);
+
     /// Closes the connections whose session has sat idle past its budget.
     void dropIdleSessions();
     /// Reads a session out of an auth response and remembers or forgets it.
-    void trackAuthOutcome(QWebSocket *socket,
-                          const QString &topic,
-                          const QString &requestClientId,
-                          const QString &requestAuthToken,
+    void trackAuthOutcome(ConnId id,
+                          const std::string &topic,
+                          const std::string &requestClientId,
+                          const std::string &requestAuthToken,
                           std::string_view responsePayloadJson);
 
-    bool startServer(const QString &host, quint16 port, QString *errorString);
-    void closeAllClients();
     // The one outbound primitive. Envelope and payload shapes come from
-    // envelope.h, so this only puts assembled text on a socket.
-    void send(QWebSocket *socket,
+    // envelope.h, so this only puts assembled text on a connection.
+    void send(ConnId id,
               std::string_view type,
               std::string_view topic,
               std::optional<CmdId> cid,
-              std::string_view payloadJson) const;
-    void sendProtocolError(QWebSocket *socket,
-                           std::optional<CmdId> cid,
-                           std::string_view code,
-                           std::string_view message) const;
-    void sendCmdResponse(QWebSocket *socket,
-                         CmdId cid,
-                         const QString &cmdTopic,
-                         std::string_view payloadJson) const;
-    void broadcastEvent(std::string_view topic, std::string_view payloadJson) const;
-    void handleCommand(QWebSocket *socket,
+              std::string_view payloadJson);
+    void sendProtocolError(ConnId id, std::optional<CmdId> cid,
+                           std::string_view code, std::string_view message);
+    void sendCmdResponse(ConnId id, CmdId cid,
+                         const std::string &cmdTopic, std::string_view payloadJson);
+    void broadcastEvent(std::string_view topic, std::string_view payloadJson);
+    void handleCommand(ConnId id,
                        CmdId cid,
-                       const QString &topic,
-                       const QString &requestClientId,
-                       const QString &requestAuthToken,
+                       const std::string &topic,
+                       const std::string &requestClientId,
+                       const std::string &requestAuthToken,
                        std::string_view payloadJson);
 
-    // What one connection has established. A socket starts unauthenticated and
-    // may only reach the pre-auth topics until it logs in (F-42); after that the
-    // identity comes from here rather than from whatever a frame claims.
-    struct ClientSession {
-        QString token;
-        QString clientId;
-        // The clock this connection is judged by: core states the budget when it
-        // hands out the session, and every frame the client sends resets it.
-        // Server pushes do not count - they say nothing about whoever logged in
-        // still being there.
-        qint64 idleBudgetMs = 0;
-        qint64 lastActivityMs = 0;
-    };
-    QHash<QWebSocket *, ClientSession> m_sessions;
-    QTimer *m_idleSweep = nullptr;
-    QStringList m_allowedOrigins;
-
+    WsServer m_server;
     bool m_running = false;
-    QJsonObject m_config;
-    QWebSocketServer *m_server = nullptr;
-    QSet<QWebSocket *> m_clients;
-    QHash<CmdId, PendingCommand> m_pendingCommands;
+    std::vector<std::string> m_allowedOrigins;
+    phi::runtime::Timer m_idleSweep;
+    std::map<ConnId, ClientSession> m_sessions;
+    std::map<CmdId, PendingCommand> m_pendingCommands; // key: core cmdId
+    std::int64_t m_lastStatsLogMs = 0;
+    std::uint64_t m_eventsSinceLast = 0;
+    std::uint64_t m_channelEventsSinceLast = 0;
 };
 
 } // namespace phicore::transport::ws

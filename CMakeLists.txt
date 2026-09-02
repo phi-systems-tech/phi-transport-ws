@@ -8,12 +8,13 @@ project(phi-transport-ws
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-
 include(GNUInstallDirs)
 
-find_package(Qt6 REQUIRED COMPONENTS Core WebSockets)
-find_package(phi-transport-api 1.6.0 CONFIG QUIET)
+# Qt-free since contract 2.0.0: the plugin runs on the runtime loop core
+# hands it, and WsServer speaks RFC 6455 over that loop's watches.
+find_package(nlohmann_json REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(phi-transport-api 2.0.0 CONFIG QUIET)
 
 if(NOT TARGET phicore::transport-api AND NOT TARGET phi_transport_api)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../phi-transport-api/CMakeLists.txt")
@@ -35,12 +36,14 @@ endif()
 add_library(phi_transport_ws MODULE
     src/wstransport.cpp
     src/wstransport.h
+    src/wsserver.cpp
+    src/wsserver.h
 )
 
 target_link_libraries(phi_transport_ws
     PRIVATE
-        Qt6::Core
-        Qt6::WebSockets
+        nlohmann_json::nlohmann_json
+        OpenSSL::Crypto
         ${PHI_TRANSPORT_API_TARGET}
 )
 

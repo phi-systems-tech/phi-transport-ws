@@ -1,37 +1,56 @@
 #include "wstransport.h"
 
-#include <QDateTime>
-#include <QHostAddress>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QJsonValue>
-#include <QUrl>
-#include <QWebSocket>
-#include <QWebSocketCorsAuthenticator>
-#include <QWebSocketProtocol>
-#include <QWebSocketServer>
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 
 namespace phicore::transport::ws {
 
 namespace {
 
-// Envelope types and the topics a transport produces itself now come from
-// envelope.h - they are protocol surface, and two transports owning a copy each
-// is how the wire drifts.
-constexpr quint16 kDefaultPort = 5040;
+// Envelope types and the topics a transport produces itself come from
+// envelope.h - they are protocol surface, and two transports owning a copy
+// each is how the wire drifts.
+constexpr std::uint16_t kDefaultPort = 5040;
 
-// How often idle sessions are looked at. The budget itself comes from core; this
-// only decides how late the close may be, and a few seconds on a timeout counted
-// in minutes is not worth a timer per connection.
+// How often idle sessions are looked at. The budget itself comes from core;
+// this only decides how late the close may be, and a few seconds on a timeout
+// counted in minutes is not worth a timer per connection.
 constexpr int kIdleSweepIntervalMs = 5000;
+
+std::int64_t wallClockMs()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+std::string trimmedCopy(std::string text)
+{
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+        text.pop_back();
+    std::size_t start = 0;
+    while (start < text.size() && (text[start] == ' ' || text[start] == '\t'))
+        ++start;
+    return text.substr(start);
+}
+
+std::string lowered(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool equalsIgnoreCase(const std::string &a, const std::string &b)
+{
+    return lowered(a) == lowered(b);
+}
 
 } // namespace
 
-WsTransport::WsTransport(QObject *parent)
-    : QObject(parent)
+WsTransport::~WsTransport()
 {
+    stop();
 }
 
 std::string WsTransport::pluginType() const
@@ -51,69 +70,61 @@ std::string WsTransport::description() const
 
 bool WsTransport::start(std::string_view configJson, std::string *errorString)
 {
-    // The private helpers below stay in QString; only the contract is Qt-free,
-    // and converting once here beats threading std::string through them.
-    QString localError;
-    const auto reportError = [&]() {
+    const auto fail = [&](std::string message) {
         if (errorString)
-            *errorString = localError.toStdString();
+            *errorString = std::move(message);
         return false;
     };
-    // Config arrives as JSON text; parsed once here, then used as an object as
-    // before.
-    const QJsonObject config =
-        QJsonDocument::fromJson(QByteArray::fromRawData(configJson.data(),
-                                                       static_cast<qsizetype>(configJson.size())))
-            .object();
-    if (!isConfigValid(config, &localError))
-        return reportError();
+
+    const Json config = Json::parse(configJson, nullptr, false);
+    std::string configError;
+    if (!isConfigValid(config, &configError))
+        return fail(std::move(configError));
 
     if (m_running)
         stop();
 
-    const QString host = hostFromConfig(config);
-    const quint16 port = portFromConfig(config);
-    if (!startServer(host, port, &localError))
-        return reportError();
+    const std::string host = hostFromConfig(config);
+    const std::uint16_t port = portFromConfig(config);
 
-    m_config = config;
+    WsServer::Callbacks callbacks;
+    callbacks.acceptOrigin = [this](const std::string &origin) { return acceptOrigin(origin); };
+    callbacks.connected = [this](ConnId id, const std::string &peer, std::uint16_t peerPort) {
+        onConnected(id, peer, peerPort);
+    };
+    callbacks.disconnected = [this](ConnId id) { onDisconnected(id); };
+    callbacks.textMessage = [this](ConnId id, std::string_view text) { onTextMessage(id, text); };
+
+    std::string listenError;
+    // UI clients request the protocol string "phi-core-ws.v1". Without an
+    // agreed subprotocol, browser WebSocket clients reject the handshake.
+    if (!m_server.listen(*runtimeLoop(), host, port, "phi-core-ws.v1",
+                         std::move(callbacks), &listenError))
+        return fail(std::move(listenError));
+
     m_allowedOrigins = allowedOriginsFromConfig(config);
-    if (!m_idleSweep) {
-        m_idleSweep = new QTimer(this);
-        m_idleSweep->setInterval(kIdleSweepIntervalMs);
-        connect(m_idleSweep, &QTimer::timeout, this, &WsTransport::dropIdleSessions);
-    }
-    m_idleSweep->start();
+    m_idleSweep = runtimeLoop()->timerEvery(std::chrono::milliseconds(kIdleSweepIntervalMs),
+                                            [this]() { dropIdleSessions(); });
     m_running = true;
-    const std::string hostText = host.toStdString();
     writeLog(LogLevel::Info,
              makeCategory(LogCategory::Transport),
              "WS transport started on %1:%2",
-             {Scalar{hostText}, Scalar{static_cast<std::int64_t>(port)}},
+             {Scalar{host}, Scalar{static_cast<std::int64_t>(port)}},
              "ws.start",
-             jsonObject({{"host", jsonQuoted(hostText)},
+             jsonObject({{"host", jsonQuoted(host)},
                          {"port", std::to_string(port)}}));
     return true;
 }
 
 void WsTransport::stop()
 {
-    if (!m_running && !m_server)
+    if (!m_running && !m_server.isListening())
         return;
 
-    if (m_idleSweep)
-        m_idleSweep->stop();
-    closeAllClients();
-    m_clients.clear();
+    m_idleSweep.reset();
+    m_server.close();
     m_sessions.clear();
     m_pendingCommands.clear();
-
-    if (m_server) {
-        m_server->close();
-        m_server->deleteLater();
-        m_server = nullptr;
-    }
-
     m_running = false;
 }
 
@@ -123,158 +134,126 @@ void WsTransport::onCoreAsyncResult(CmdId cmdId, std::string_view payloadJson)
     if (it == m_pendingCommands.end())
         return;
 
-    const PendingCommand pending = it.value();
+    const PendingCommand pending = it->second;
     m_pendingCommands.erase(it);
-
-    QWebSocket *socket = pending.socket.data();
-    if (!socket || socket->state() != QAbstractSocket::ConnectedState)
-        return;
-
-    sendCmdResponse(socket, pending.cid, pending.cmdTopic, payloadJson);
+    sendCmdResponse(pending.conn, pending.cid, pending.cmdTopic, payloadJson);
 }
 
 void WsTransport::onCoreEvent(std::string_view topic, std::string_view payloadJson)
 {
-    const QString topicText = QString::fromUtf8(topic.data(), static_cast<qsizetype>(topic.size()));
-    if (topicText.trimmed().isEmpty())
+    if (topic.empty())
         return;
-    static qint64 s_lastStatsLogMs = 0;
-    static quint64 s_eventsSinceLast = 0;
-    static quint64 s_channelEventsSinceLast = 0;
-    ++s_eventsSinceLast;
+    ++m_eventsSinceLast;
     if (topic == std::string_view("event.channel.stateChanged"))
-        ++s_channelEventsSinceLast;
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (s_lastStatsLogMs <= 0 || (nowMs - s_lastStatsLogMs) >= 5000) {
-        QJsonObject fields;
-        const std::string clients = std::to_string(m_clients.size());
-        const std::string events = std::to_string(s_eventsSinceLast);
-        const std::string channelEvents = std::to_string(s_channelEventsSinceLast);
+        ++m_channelEventsSinceLast;
+    const std::int64_t now = wallClockMs();
+    if (m_lastStatsLogMs <= 0 || (now - m_lastStatsLogMs) >= 5000) {
         writeLog(LogLevel::Debug,
                  makeCategory(LogCategory::Transport),
                  "WS broadcast stats: clients=%1 events=%2 channelEvents=%3",
-                 {Scalar{static_cast<std::int64_t>(m_clients.size())},
-                  Scalar{static_cast<std::int64_t>(s_eventsSinceLast)},
-                  Scalar{static_cast<std::int64_t>(s_channelEventsSinceLast)}},
+                 {Scalar{static_cast<std::int64_t>(m_server.connectionCount())},
+                  Scalar{static_cast<std::int64_t>(m_eventsSinceLast)},
+                  Scalar{static_cast<std::int64_t>(m_channelEventsSinceLast)}},
                  "ws.broadcastStats",
-                 jsonObject({{"clients", clients},
-                             {"events", events},
-                             {"channelEvents", channelEvents}}));
-        s_eventsSinceLast = 0;
-        s_channelEventsSinceLast = 0;
-        s_lastStatsLogMs = nowMs;
+                 jsonObject({{"clients", std::to_string(m_server.connectionCount())},
+                             {"events", std::to_string(m_eventsSinceLast)},
+                             {"channelEvents", std::to_string(m_channelEventsSinceLast)}}));
+        m_eventsSinceLast = 0;
+        m_channelEventsSinceLast = 0;
+        m_lastStatsLogMs = now;
     }
     broadcastEvent(topic, payloadJson);
 }
 
-void WsTransport::onNewConnection()
+bool WsTransport::acceptOrigin(const std::string &originRaw)
 {
-    if (!m_server)
-        return;
-
-    while (m_server->hasPendingConnections()) {
-        QWebSocket *socket = m_server->nextPendingConnection();
-        if (!socket)
-            continue;
-        m_clients.insert(socket);
-        const QString peerAddress = socket->peerAddress().toString();
-        const int peerPort = socket->peerPort();
-        const std::string peerText = peerAddress.toStdString();
-        const std::string portText = std::to_string(peerPort);
-        const std::string countText = std::to_string(m_clients.size());
-        writeLog(LogLevel::Info,
-                 makeCategory(LogCategory::Transport),
-                 "WS client connected: %1:%2 total=%3",
-                 {Scalar{peerText},
-                  Scalar{static_cast<std::int64_t>(peerPort)},
-                  Scalar{static_cast<std::int64_t>(m_clients.size())}},
-                 "ws.clientConnected",
-                 jsonObject({{"peerAddress", jsonQuoted(peerText)},
-                             {"peerPort", portText},
-                             {"clientCount", countText}}));
-        connect(socket, &QWebSocket::textMessageReceived,
-                this, &WsTransport::onTextMessageReceived);
-        connect(socket, &QWebSocket::disconnected,
-                this, &WsTransport::onSocketDisconnected);
+    const std::string origin = trimmedCopy(originRaw);
+    if (origin.empty()) {
+        // No Origin header: not a browser. Command-line clients and services
+        // are unaffected by this check.
+        return true;
     }
+    if (isLoopbackOrigin(origin))
+        return true;
+    for (const std::string &allowed : m_allowedOrigins) {
+        if (equalsIgnoreCase(allowed, origin))
+            return true;
+    }
+    writeLog(LogLevel::Warn,
+             makeCategory(LogCategory::Security, true),
+             "Refused a WebSocket handshake from origin %1; list it under 'allowedOrigins' in the transport config if it is yours",
+             {Scalar{origin}},
+             "ws.originRefused",
+             jsonObject({{"origin", jsonQuoted(origin)}}));
+    return false;
 }
 
-void WsTransport::onSocketDisconnected()
+void WsTransport::onConnected(ConnId id, const std::string &peerAddress, std::uint16_t peerPort)
 {
-    auto *socket = qobject_cast<QWebSocket *>(sender());
-    if (!socket)
-        return;
-
-    m_clients.remove(socket);
-    m_sessions.remove(socket);
-    const QString peerAddress = socket->peerAddress().toString();
-    const int peerPort = socket->peerPort();
-    QJsonObject fields;
-    const std::string peerText = peerAddress.toStdString();
-    const std::string portText = std::to_string(peerPort);
-    const std::string countText = std::to_string(m_clients.size());
     writeLog(LogLevel::Info,
              makeCategory(LogCategory::Transport),
-             "WS client disconnected: %1:%2 total=%3",
-             {Scalar{peerText},
+             "WS client connected: %1:%2 total=%3",
+             {Scalar{peerAddress},
               Scalar{static_cast<std::int64_t>(peerPort)},
-              Scalar{static_cast<std::int64_t>(m_clients.size())}},
-             "ws.clientDisconnected",
-             jsonObject({{"peerAddress", jsonQuoted(peerText)},
-                         {"peerPort", portText},
-                         {"clientCount", countText}}));
+              Scalar{static_cast<std::int64_t>(m_server.connectionCount())}},
+             "ws.clientConnected",
+             jsonObject({{"peerAddress", jsonQuoted(peerAddress)},
+                         {"peerPort", std::to_string(peerPort)},
+                         {"clientCount", std::to_string(m_server.connectionCount())}}));
+}
 
+void WsTransport::onDisconnected(ConnId id)
+{
+    m_sessions.erase(id);
     for (auto it = m_pendingCommands.begin(); it != m_pendingCommands.end();) {
-        if (it.value().socket == socket)
+        if (it->second.conn == id)
             it = m_pendingCommands.erase(it);
         else
             ++it;
     }
-
-    socket->deleteLater();
+    writeLog(LogLevel::Info,
+             makeCategory(LogCategory::Transport),
+             "WS client disconnected: total=%1",
+             {Scalar{static_cast<std::int64_t>(m_server.connectionCount())}},
+             "ws.clientDisconnected",
+             jsonObject({{"clientCount", std::to_string(m_server.connectionCount())}}));
 }
 
-void WsTransport::onTextMessageReceived(const QString &message)
+void WsTransport::onTextMessage(ConnId id, std::string_view message)
 {
-    auto *socket = qobject_cast<QWebSocket *>(sender());
-    if (!socket)
-        return;
-
-
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        sendProtocolError(socket, std::nullopt, kErrorCodeInvalidJson, kMessageInvalidJson);
+    const Json doc = Json::parse(message, nullptr, false);
+    if (!doc.is_object()) {
+        sendProtocolError(id, std::nullopt, kErrorCodeInvalidJson, kMessageInvalidJson);
         return;
     }
 
-    const QJsonObject obj = doc.object();
-    const QString type = obj.value(QStringLiteral("type")).toString();
-    const QString topic = obj.value(QStringLiteral("topic")).toString();
-    const QJsonObject payload = obj.value(QStringLiteral("payload")).toObject();
+    const std::string type = doc.value("type", std::string());
+    const std::string topic = trimmedCopy(doc.value("topic", std::string()));
+    const Json payload = doc.contains("payload") && doc["payload"].is_object()
+        ? doc["payload"] : Json::object();
 
-    const std::optional<CmdId> cid = readCid(obj.value(QStringLiteral("cid")));
+    const std::optional<CmdId> cid = readCid(doc.contains("cid") ? doc["cid"] : Json());
     if (!cid.has_value()) {
-        sendProtocolError(socket, std::nullopt, kErrorCodeMissingCid, kMessageMissingCid);
+        sendProtocolError(id, std::nullopt, kErrorCodeMissingCid, kMessageMissingCid);
         return;
     }
 
-    if (type.toStdString() != kEnvelopeTypeCmd) {
-        sendProtocolError(socket, cid, kErrorCodeInvalidType, kMessageInvalidType);
+    if (type != kEnvelopeTypeCmd) {
+        sendProtocolError(id, cid, kErrorCodeInvalidType, kMessageInvalidType);
         return;
     }
 
-    if (topic.trimmed().isEmpty()) {
-        sendProtocolError(socket, cid, kErrorCodeMissingTopic, kMessageMissingTopic);
+    if (topic.empty()) {
+        sendProtocolError(id, cid, kErrorCodeMissingTopic, kMessageMissingTopic);
         return;
     }
 
     // A connection that has not authenticated gets the handshake and the login,
     // and nothing else. Core would refuse the rest anyway, but a socket that
     // answers to anyone should not be able to make it do the refusing (F-42).
-    const QString requestClientId = payload.value(QStringLiteral("clientId")).toString();
-    if (!m_sessions.contains(socket) && !isPreAuthTopic(topic)) {
-        sendProtocolError(socket, cid, "unauthenticated",
+    const std::string requestClientId = payload.value("clientId", std::string());
+    if (m_sessions.find(id) == m_sessions.end() && !isPreAuthTopic(topic)) {
+        sendProtocolError(id, cid, "unauthenticated",
                           "Authenticate with sync.auth.begin.set and sync.auth.login.set"
                           " before sending this topic.");
         return;
@@ -284,353 +263,275 @@ void WsTransport::onTextMessageReceived(const QString &message)
     // heartbeat says the socket is open, not that anyone is still using it, and
     // letting it extend the session would make the timeout decorative.
     if (!isPreAuthTopic(topic)) {
-        if (auto session = m_sessions.find(socket); session != m_sessions.end())
-            session->lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+        if (auto session = m_sessions.find(id); session != m_sessions.end())
+            session->second.lastActivityMs = wallClockMs();
     }
 
     // Only used to remember a session the client already held when it said hello.
-    const QString requestAuthToken = payload.value(QStringLiteral("authToken")).toString().trimmed();
+    const std::string requestAuthToken = trimmedCopy(payload.value("authToken", std::string()));
 
     // The API takes the payload as text; this transport parsed the frame to read the
     // envelope, so the sub-object is serialized once here. That extra step is the
     // cost side of the text boundary, and it sits on the command path rather than on
     // the event path.
-    const QByteArray payloadBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    handleCommand(socket,
-                  *cid,
-                  topic,
-                  requestClientId,
-                  requestAuthToken,
-                  std::string_view(payloadBytes.constData(), static_cast<std::size_t>(payloadBytes.size())));
+    handleCommand(id, *cid, topic, requestClientId, requestAuthToken, payload.dump());
 }
 
-bool WsTransport::isConfigValid(const QJsonObject &config, QString *errorString)
+bool WsTransport::isConfigValid(const Json &config, std::string *errorString)
 {
-    const int port = static_cast<int>(portFromConfig(config));
+    const int port = config.is_object()
+        ? config.value("port", static_cast<int>(kDefaultPort))
+        : static_cast<int>(kDefaultPort);
     if (port < 1 || port > 65535) {
         if (errorString)
-            *errorString = QStringLiteral("Invalid 'port' value; expected 1..65535.");
+            *errorString = "Invalid 'port' value; expected 1..65535.";
         return false;
     }
 
-    const QString host = hostFromConfig(config).trimmed();
-    if (host.isEmpty()) {
+    if (hostFromConfig(config).empty()) {
         if (errorString)
-            *errorString = QStringLiteral("Invalid 'host' value.");
+            *errorString = "Invalid 'host' value.";
         return false;
     }
 
     return true;
 }
 
-std::optional<CmdId> WsTransport::readCid(const QJsonValue &value)
+std::optional<CmdId> WsTransport::readCid(const Json &value)
 {
-    if (value.isDouble())
-        return cidFromNumber(value.toDouble(-1.0));
-    if (value.isString())
-        return cidFromString(value.toString().toStdString());
+    if (value.is_number())
+        return cidFromNumber(value.get<double>());
+    if (value.is_string())
+        return cidFromString(value.get<std::string>());
     return std::nullopt;
 }
 
-QStringList WsTransport::allowedOriginsFromConfig(const QJsonObject &config)
+std::vector<std::string> WsTransport::allowedOriginsFromConfig(const Json &config)
 {
-    QStringList origins;
-    const QJsonValue configured = config.value(QStringLiteral("allowedOrigins"));
-    if (configured.isArray()) {
-        const QJsonArray entries = configured.toArray();
-        for (const QJsonValue &entry : entries) {
-            const QString origin = entry.toString().trimmed();
-            if (!origin.isEmpty())
-                origins.append(origin);
-        }
+    std::vector<std::string> origins;
+    if (!config.is_object())
+        return origins;
+    const auto it = config.find("allowedOrigins");
+    if (it == config.end() || !it->is_array())
+        return origins;
+    for (const Json &entry : *it) {
+        if (!entry.is_string())
+            continue;
+        std::string origin = trimmedCopy(entry.get<std::string>());
+        if (!origin.empty())
+            origins.push_back(std::move(origin));
     }
     return origins;
 }
 
-bool WsTransport::isLoopbackOrigin(const QString &origin)
+bool WsTransport::isLoopbackOrigin(const std::string &origin)
 {
     // A UI served from the same machine keeps working out of the box, whichever
     // port a dev server or the packaged UI happens to use. Anything else has to
     // be named. That is the line between "the operator's own page" and
     // "whatever site the browser happens to have open".
-    const QUrl url(origin);
-    if (!url.isValid())
-        return false;
-    const QString scheme = url.scheme().toLower();
-    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https"))
+    const std::string low = lowered(origin);
+    std::string rest;
+    if (low.rfind("http://", 0) == 0)
+        rest = low.substr(7);
+    else if (low.rfind("https://", 0) == 0)
+        rest = low.substr(8);
+    else
         return false;
 
-    const QString host = url.host().toLower();
-    if (host == QStringLiteral("localhost") || host == QStringLiteral("::1"))
+    // The host part: up to the port or the path, brackets stripped for IPv6.
+    std::string hostPart = rest.substr(0, rest.find('/'));
+    if (!hostPart.empty() && hostPart.front() == '[') {
+        const std::size_t closing = hostPart.find(']');
+        if (closing == std::string::npos)
+            return false;
+        hostPart = hostPart.substr(1, closing - 1);
+    } else {
+        hostPart = hostPart.substr(0, hostPart.find(':'));
+    }
+
+    if (hostPart == "localhost" || hostPart == "::1")
         return true;
-    const QHostAddress address(host);
-    return !address.isNull() && address.isLoopback();
+    // 127.0.0.0/8 - the whole block is loopback.
+    return hostPart.rfind("127.", 0) == 0;
 }
 
-bool WsTransport::isPreAuthTopic(const QString &topic)
+bool WsTransport::isPreAuthTopic(std::string_view topic)
 {
     // The handshake, the way in, and the way out. Core owns the authoritative
     // table and refuses anything else anyway; this list exists so an
     // unauthenticated flood never reaches it in the first place.
-    return topic == QLatin1String("sync.hello.get")
-        || topic == QLatin1String("sync.ping.get")
-        || topic.startsWith(QLatin1String("sync.auth."));
+    return topic == "sync.hello.get"
+        || topic == "sync.ping.get"
+        || topic.rfind("sync.auth.", 0) == 0;
 }
 
-void WsTransport::trackAuthOutcome(QWebSocket *socket,
-                                   const QString &topic,
-                                   const QString &requestClientId,
-                                   const QString &requestAuthToken,
+void WsTransport::trackAuthOutcome(ConnId id,
+                                   const std::string &topic,
+                                   const std::string &requestClientId,
+                                   const std::string &requestAuthToken,
                                    std::string_view responsePayloadJson)
 {
-    if (!socket)
-        return;
-
-    if (topic == QLatin1String("sync.auth.logout.set")) {
-        m_sessions.remove(socket);
+    if (topic == "sync.auth.logout.set") {
+        m_sessions.erase(id);
         return;
     }
 
-    const bool isLogin = topic == QLatin1String("sync.auth.login.set")
-        || topic == QLatin1String("sync.auth.bootstrap.set")
-        || topic == QLatin1String("sync.hello.get");
+    const bool isLogin = topic == "sync.auth.login.set"
+        || topic == "sync.auth.bootstrap.set"
+        || topic == "sync.hello.get";
     if (!isLogin)
         return;
 
     // The only place this transport looks inside a payload: the session core
     // just issued is what it has to remember, and it is in the answer.
-    const QJsonObject response =
-        QJsonDocument::fromJson(QByteArray::fromRawData(responsePayloadJson.data(),
-                                                       static_cast<qsizetype>(responsePayloadJson.size())))
-            .object();
+    const Json response = Json::parse(responsePayloadJson, nullptr, false);
+    if (!response.is_object())
+        return;
 
     // How long this session may sit idle is core's decision, and it states it in
     // the same answer that hands out the token (F-42). 0 or absent means core
     // does not expire sessions, so neither does this transport.
-    const qint64 idleBudgetMs =
-        static_cast<qint64>(response.value(QStringLiteral("sessionIdleSec")).toDouble(0.0)) * 1000;
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const std::int64_t idleBudgetMs =
+        static_cast<std::int64_t>(response.value("sessionIdleSec", 0.0)) * 1000;
+    const std::int64_t now = wallClockMs();
 
-    const QString token = response.value(QStringLiteral("token")).toString().trimmed();
-    if (!token.isEmpty()) {
+    const std::string token = trimmedCopy(response.value("token", std::string()));
+    if (!token.empty()) {
         ClientSession session;
         session.token = token;
         session.clientId = requestClientId;
         session.idleBudgetMs = idleBudgetMs;
-        session.lastActivityMs = nowMs;
-        m_sessions.insert(socket, session);
+        session.lastActivityMs = now;
+        m_sessions[id] = std::move(session);
         return;
     }
 
     // hello with an authToken core accepted: the client already had a session.
-    if (topic == QLatin1String("sync.hello.get")
-        && response.value(QStringLiteral("authAccepted")).toBool(false)) {
+    if (topic == "sync.hello.get" && response.value("authAccepted", false)) {
+        if (requestAuthToken.empty())
+            return;
         ClientSession session;
         session.token = requestAuthToken;
         session.clientId = requestClientId;
         session.idleBudgetMs = idleBudgetMs;
-        session.lastActivityMs = nowMs;
-        if (!session.token.isEmpty())
-            m_sessions.insert(socket, session);
+        session.lastActivityMs = now;
+        m_sessions[id] = std::move(session);
     }
 }
 
-QString WsTransport::hostFromConfig(const QJsonObject &config)
+std::string WsTransport::hostFromConfig(const Json &config)
 {
-    const QString host = config.value(QStringLiteral("host")).toString().trimmed();
-    if (host.isEmpty())
-        return QStringLiteral("127.0.0.1");
-    return host;
+    if (config.is_object()) {
+        const std::string host = trimmedCopy(config.value("host", std::string()));
+        if (!host.empty())
+            return host;
+    }
+    return "127.0.0.1";
 }
 
-quint16 WsTransport::portFromConfig(const QJsonObject &config)
+std::uint16_t WsTransport::portFromConfig(const Json &config)
 {
-    const int port = config.value(QStringLiteral("port")).toInt(static_cast<int>(kDefaultPort));
+    const int port = config.is_object()
+        ? config.value("port", static_cast<int>(kDefaultPort))
+        : static_cast<int>(kDefaultPort);
     if (port < 1 || port > 65535)
         return kDefaultPort;
-    return static_cast<quint16>(port);
-}
-
-bool WsTransport::startServer(const QString &host, quint16 port, QString *errorString)
-{
-    auto *server = new QWebSocketServer(QStringLiteral("phi-transport-ws"),
-                                        QWebSocketServer::NonSecureMode,
-                                        this);
-    // UI clients request the protocol string "phi-core-ws.v1". Without an
-    // agreed subprotocol, browser WebSocket clients reject the handshake.
-    server->setSupportedSubprotocols({ QStringLiteral("phi-core-ws.v1") });
-
-    QHostAddress address;
-    const QString normalizedHost = host.trimmed().toLower();
-    if (normalizedHost == QStringLiteral("*")
-        || normalizedHost == QStringLiteral("any")
-        || normalizedHost == QStringLiteral("0.0.0.0")) {
-        address = QHostAddress::AnyIPv4;
-    } else if (normalizedHost == QStringLiteral("::")
-               || normalizedHost == QStringLiteral("anyipv6")) {
-        address = QHostAddress::AnyIPv6;
-    } else if (normalizedHost == QStringLiteral("localhost")) {
-        address = QHostAddress::LocalHost;
-    } else if (!address.setAddress(host)) {
-        delete server;
-        if (errorString)
-            *errorString = QStringLiteral("Invalid host address: %1").arg(host);
-        return false;
-    }
-
-    if (!server->listen(address, port)) {
-        const QString err = server->errorString();
-        delete server;
-        if (errorString)
-            *errorString = err.isEmpty() ? QStringLiteral("Failed to listen on requested host/port") : err;
-        return false;
-    }
-
-    // A WebSocket handshake is not subject to the same-origin policy, so any page
-    // a browser has open can connect to this port unless the server checks the
-    // Origin itself. Without this, "bound to loopback" protected nothing against
-    // a website the user happened to visit (F-42).
-    connect(server, &QWebSocketServer::originAuthenticationRequired,
-            this, [this](QWebSocketCorsAuthenticator *authenticator) {
-        if (!authenticator)
-            return;
-        const QString origin = authenticator->origin().trimmed();
-        if (origin.isEmpty()) {
-            // No Origin header: not a browser. Command-line clients and services
-            // are unaffected by this check.
-            authenticator->setAllowed(true);
-            return;
-        }
-        if (isLoopbackOrigin(origin) || m_allowedOrigins.contains(origin, Qt::CaseInsensitive)) {
-            authenticator->setAllowed(true);
-            return;
-        }
-        authenticator->setAllowed(false);
-        const std::string originText = origin.toStdString();
-        writeLog(LogLevel::Warn,
-                 makeCategory(LogCategory::Security, true),
-                 "Refused a WebSocket handshake from origin %1; list it under 'allowedOrigins' in the transport config if it is yours",
-                 {Scalar{originText}},
-                 "ws.originRefused",
-                 jsonObject({{"origin", jsonQuoted(originText)}}));
-    });
-
-    connect(server, &QWebSocketServer::newConnection,
-            this, &WsTransport::onNewConnection);
-
-    m_server = server;
-    return true;
+    return static_cast<std::uint16_t>(port);
 }
 
 void WsTransport::dropIdleSessions()
 {
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    QList<QWebSocket *> expired;
-    for (auto it = m_sessions.constBegin(); it != m_sessions.constEnd(); ++it) {
-        if (it->idleBudgetMs <= 0)
+    const std::int64_t now = wallClockMs();
+    std::vector<std::pair<ConnId, ClientSession>> expired;
+    for (const auto &entry : m_sessions) {
+        if (entry.second.idleBudgetMs <= 0)
             continue;
-        if (nowMs - it->lastActivityMs > it->idleBudgetMs)
-            expired.append(it.key());
+        if (now - entry.second.lastActivityMs > entry.second.idleBudgetMs)
+            expired.emplace_back(entry.first, entry.second);
     }
 
-    for (QWebSocket *socket : expired) {
-        const ClientSession session = m_sessions.take(socket);
-        if (!socket)
-            continue;
-        const std::string clientIdText = session.clientId.toStdString();
-        const std::int64_t idleSec = (nowMs - session.lastActivityMs) / 1000;
+    for (const auto &[id, session] : expired) {
+        m_sessions.erase(id);
+        const std::int64_t idleSec = (now - session.lastActivityMs) / 1000;
         writeLog(LogLevel::Info,
                  makeCategory(LogCategory::Security),
                  "Closing an idle connection after %1 s without a call (client '%2')",
-                 {Scalar{idleSec}, Scalar{clientIdText}},
+                 {Scalar{idleSec}, Scalar{session.clientId}},
                  "ws.idleTimeout",
                  jsonObject({{"idleSec", std::to_string(idleSec)},
-                             {"clientId", jsonQuoted(clientIdText)}}));
+                             {"clientId", jsonQuoted(session.clientId)}}));
         // Core drops the token on the same clock; this closes the pipe that
         // would otherwise keep pushing events at a session nobody is watching.
-        socket->close(QWebSocketProtocol::CloseCodeNormal,
-                      QStringLiteral("Session idle timeout"));
+        m_server.closeConnection(id, 1000, "Session idle timeout");
     }
 }
 
-void WsTransport::closeAllClients()
-{
-    const QList<QWebSocket *> clients = m_clients.values();
-    for (QWebSocket *client : clients) {
-        if (!client)
-            continue;
-        client->close();
-        client->deleteLater();
-    }
-    m_clients.clear();
-}
-
-void WsTransport::send(QWebSocket *socket,
+void WsTransport::send(ConnId id,
                        std::string_view type,
                        std::string_view topic,
                        std::optional<CmdId> cid,
-                       std::string_view payloadJson) const
+                       std::string_view payloadJson)
 {
-    if (!socket || socket->state() != QAbstractSocket::ConnectedState)
-        return;
-
     // The envelope shape comes from the shared header; the payload is spliced as
     // text, so an event that core serialized once travels straight to the wire.
     const JsonText out = makeEnvelope(type, topic, cid, payloadJson);
-    socket->sendTextMessage(QString::fromUtf8(out.data(), static_cast<qsizetype>(out.size())));
+    m_server.sendText(id, out);
 }
 
-void WsTransport::sendProtocolError(QWebSocket *socket,
+void WsTransport::sendProtocolError(ConnId id,
                                     std::optional<CmdId> cid,
                                     std::string_view code,
-                                    std::string_view message) const
+                                    std::string_view message)
 {
-    send(socket, kEnvelopeTypeError, kTopicProtocolError, cid, makeProtocolErrorPayload(code, message));
+    send(id, kEnvelopeTypeError, kTopicProtocolError, cid, makeProtocolErrorPayload(code, message));
 }
 
-void WsTransport::sendCmdResponse(QWebSocket *socket,
+void WsTransport::sendCmdResponse(ConnId id,
                                   CmdId cid,
-                                  const QString &cmdTopic,
-                                  std::string_view payloadJson) const
+                                  const std::string &cmdTopic,
+                                  std::string_view payloadJson)
 {
     // The only outbound path that parses: it adds `error: null` *if absent*, and
     // deciding that from raw text would be a substring guess. Command responses are
     // user-driven, so one parse here is the cheap side of the trade.
-    QJsonObject out =
-        QJsonDocument::fromJson(QByteArray::fromRawData(payloadJson.data(),
-                                                       static_cast<qsizetype>(payloadJson.size())))
-            .object();
-    out.insert(QStringLiteral("cmd"), cmdTopic);
-    if (!out.contains(QStringLiteral("error")))
-        out.insert(QStringLiteral("error"), QJsonValue::Null);
-    const QByteArray bytes = QJsonDocument(out).toJson(QJsonDocument::Compact);
-    send(socket,
-         kEnvelopeTypeResponse,
-         kTopicCmdResponse,
-         cid,
-         std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+    Json out = Json::parse(payloadJson, nullptr, false);
+    if (!out.is_object())
+        out = Json::object();
+    out["cmd"] = cmdTopic;
+    if (!out.contains("error"))
+        out["error"] = nullptr;
+    const std::string bytes = out.dump();
+    send(id, kEnvelopeTypeResponse, kTopicCmdResponse, cid, bytes);
 }
 
-void WsTransport::broadcastEvent(std::string_view topic, std::string_view payloadJson) const
+void WsTransport::broadcastEvent(std::string_view topic, std::string_view payloadJson)
 {
     // No cid on events; otherwise the same envelope as everything else.
     //
     // Events carry live state - channel values, adapter status - so they go only
-    // to sockets that logged in. Otherwise anything that can open a connection
-    // would read the house without ever authenticating, which is the same leak
-    // the command gate closes (F-42).
-    for (QWebSocket *client : m_clients) {
-        if (m_sessions.value(client).token.isEmpty())
-            continue;
-        send(client, kEnvelopeTypeEvent, topic, std::nullopt, payloadJson);
+    // to connections that logged in. Otherwise anything that can open a
+    // connection would read the house without ever authenticating, which is the
+    // same leak the command gate closes (F-42). The envelope is built once for
+    // the whole fan-out.
+    if (m_sessions.empty())
+        return;
+    const JsonText out = makeEnvelope(kEnvelopeTypeEvent, topic, std::nullopt, payloadJson);
+    std::vector<ConnId> ids;
+    ids.reserve(m_sessions.size());
+    for (const auto &entry : m_sessions) {
+        if (!entry.second.token.empty())
+            ids.push_back(entry.first);
     }
+    for (ConnId id : ids)
+        m_server.sendText(id, out);
 }
 
-void WsTransport::handleCommand(QWebSocket *socket,
+void WsTransport::handleCommand(ConnId id,
                                 CmdId cid,
-                                const QString &topic,
-                                const QString &requestClientId,
-                                const QString &requestAuthToken,
+                                const std::string &topic,
+                                const std::string &requestClientId,
+                                const std::string &requestAuthToken,
                                 std::string_view payloadJson)
 {
     // Routing is the protocol's decision, made once in TransportPluginBase. What
@@ -639,33 +540,31 @@ void WsTransport::handleCommand(QWebSocket *socket,
     //
     // The identity comes from the connection, not from the frame: a client cannot
     // hand itself a session by putting a token in a payload (F-42, F-60).
-    const ClientSession session = m_sessions.value(socket);
-    const std::string sessionToken = session.token.toStdString();
-    const std::string sessionClientId = session.clientId.toStdString();
     CallerIdentity caller;
-    if (!sessionToken.empty()) {
+    if (const auto sessionIt = m_sessions.find(id); sessionIt != m_sessions.end()
+        && !sessionIt->second.token.empty()) {
         caller.kind = CallerIdentity::Kind::Session;
-        caller.sessionToken = sessionToken;
-        caller.clientId = sessionClientId;
+        caller.sessionToken = sessionIt->second.token;
+        caller.clientId = sessionIt->second.clientId;
     }
-    const CommandOutcome outcome = dispatchCommand(topic.toUtf8().toStdString(), payloadJson, caller);
+    const CommandOutcome outcome = dispatchCommand(topic, payloadJson, caller);
 
     // A login, a bootstrap or a hello that core accepted establishes the session
     // this connection speaks with from now on.
-    trackAuthOutcome(socket, topic, requestClientId, requestAuthToken, outcome.payloadJson);
+    trackAuthOutcome(id, topic, requestClientId, requestAuthToken, outcome.payloadJson);
 
     if (outcome.cmdId > 0) {
         // Core took the command and answers later; the client waits under that id
         // until onCoreAsyncResult arrives.
         PendingCommand pending;
-        pending.socket = socket;
+        pending.conn = id;
         pending.cid = cid;
         pending.cmdTopic = topic;
-        m_pendingCommands.insert(outcome.cmdId, pending);
+        m_pendingCommands.emplace(outcome.cmdId, pending);
     }
 
     const auto [type, envelopeTopic] = envelopeFor(outcome.kind);
-    send(socket, type, envelopeTopic, cid, outcome.payloadJson);
+    send(id, type, envelopeTopic, cid, outcome.payloadJson);
 }
 
 } // namespace phicore::transport::ws

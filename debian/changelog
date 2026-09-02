@@ -1,3 +1,13 @@
+phi-transport-ws (0.1.6~git202609021519.4d8fd3e-1) unstable; urgency=medium
+
+  * Contract 2.0.0: the plugin runs on the runtime loop core provides and
+    speaks RFC 6455 through its own WsServer - handshake with origin gate
+    and subprotocol echo, masking enforced, fragmentation, ping/pong,
+    clean closes. Qt leaves the plugin; depends on libphi-runtime0 and
+    OpenSSL through shlibdeps.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 02 Sep 2026 15:19:26 +0200
+
 phi-transport-ws (0.1.6~git202608301632.b60d581-1) trixie; urgency=medium
 
   * The unauthenticated refusal names both halves of the login.

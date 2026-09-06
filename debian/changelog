@@ -1,3 +1,10 @@
+phi-transport-ws (0.1.6~git202609060740.347e850-1) unstable; urgency=medium
+
+  * Contract 2.1.0: the management surface - a client and session summary,
+    "Show sessions" and "Disconnect all clients".
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 06 Sep 2026 07:40:03 +0200
+
 phi-transport-ws (0.1.6~git202609021519.4d8fd3e-1) unstable; urgency=medium
 
   * Contract 2.0.0: the plugin runs on the runtime loop core provides and

@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include <string_view>
 
 namespace phicore::transport::ws {
@@ -58,6 +59,8 @@ public:
     void closeConnection(ConnId id, std::uint16_t code, std::string_view reason);
 
     std::size_t connectionCount() const { return m_conns.size(); }
+    /// Every connection that is not already being torn down.
+    std::vector<ConnId> connectionIds() const;
     bool isListening() const { return m_listenFd >= 0; }
 
 private:

@@ -498,6 +498,17 @@ void WsServer::sendText(ConnId id, std::string_view text)
     sendFrame(it->second.get(), kOpText, text);
 }
 
+std::vector<WsServer::ConnId> WsServer::connectionIds() const
+{
+    std::vector<ConnId> ids;
+    ids.reserve(m_conns.size());
+    for (const auto &entry : m_conns) {
+        if (!entry.second->closed)
+            ids.push_back(entry.first);
+    }
+    return ids;
+}
+
 void WsServer::closeConnection(ConnId id, std::uint16_t code, std::string_view reason)
 {
     auto it = m_conns.find(id);

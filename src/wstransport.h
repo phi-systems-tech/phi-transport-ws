@@ -36,6 +36,11 @@ protected:
     void onCoreAsyncResult(CmdId cmdId, std::string_view payloadJson) override;
     void onCoreEvent(std::string_view topic, std::string_view payloadJson) override;
 
+    // The management surface (contract 2.1.0): how many clients and sessions
+    // there are, a list of the sessions, and the door for everyone at once.
+    JsonText describeManagement() const override;
+    bool invokeAction(CmdId cmdId, std::string_view actionId, std::string_view paramsJson) override;
+
 private:
     using Json = nlohmann::json;
     using ConnId = WsServer::ConnId;
@@ -107,6 +112,8 @@ private:
     bool m_running = false;
     std::vector<std::string> m_allowedOrigins;
     phi::runtime::Timer m_idleSweep;
+    /// The pause between answering "disconnect all" and doing it.
+    phi::runtime::Timer m_disconnectAll;
     std::map<ConnId, ClientSession> m_sessions;
     std::map<CmdId, PendingCommand> m_pendingCommands; // key: core cmdId
     std::int64_t m_lastStatsLogMs = 0;

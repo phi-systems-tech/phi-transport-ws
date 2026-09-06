@@ -122,6 +122,7 @@ void WsTransport::stop()
         return;
 
     m_idleSweep.reset();
+    m_disconnectAll.reset();
     m_server.close();
     m_sessions.clear();
     m_pendingCommands.clear();
@@ -438,6 +439,73 @@ std::uint16_t WsTransport::portFromConfig(const Json &config)
     if (port < 1 || port > 65535)
         return kDefaultPort;
     return static_cast<std::uint16_t>(port);
+}
+
+namespace {
+
+// The two actions, by id. Strings the UI shows are English here and
+// translated there, like every adapter's.
+constexpr std::string_view kActionSessions = "sessions";
+constexpr std::string_view kActionDisconnectAll = "disconnectAll";
+
+} // namespace
+
+JsonText WsTransport::describeManagement() const
+{
+    const std::size_t clients = m_server.connectionCount();
+    const std::size_t sessions = m_sessions.size();
+    std::string summary;
+    if (!m_running) {
+        summary = "Not listening";
+    } else {
+        summary = std::to_string(clients) + (clients == 1 ? " client" : " clients") + ", "
+            + std::to_string(sessions) + (sessions == 1 ? " session" : " sessions");
+    }
+    const JsonText sessionsAction = makeActionDescriptor(
+        kActionSessions, "Show sessions", "Who is logged in over this transport, and for how long they have been idle.");
+    const JsonText disconnectAction = makeActionDescriptor(
+        kActionDisconnectAll, "Disconnect all clients",
+        "Closes every WebSocket connection, this one included. Clients reconnect and log in again.",
+        "\"danger\":true,\"confirm\":" + jsonObject({{"title", jsonQuoted("Disconnect every client?")},
+                                                       {"okText", jsonQuoted("Disconnect")}}));
+    return makeManagementDescription(summary, {sessionsAction, disconnectAction});
+}
+
+bool WsTransport::invokeAction(CmdId cmdId, std::string_view actionId, std::string_view paramsJson)
+{
+    (void)paramsJson;
+    if (actionId == kActionSessions) {
+        if (m_sessions.empty()) {
+            completeAction(cmdId, makeActionResultText("No session is logged in."));
+            return true;
+        }
+        const std::int64_t now = wallClockMs();
+        std::string text;
+        for (const auto &entry : m_sessions) {
+            if (!text.empty())
+                text += '\n';
+            const std::int64_t idleSec = entry.second.lastActivityMs > 0 ? (now - entry.second.lastActivityMs) / 1000 : 0;
+            text += entry.second.clientId.empty() ? std::string("(no client id)") : entry.second.clientId;
+            text += ": idle " + std::to_string(idleSec) + " s";
+        }
+        completeAction(cmdId, makeActionResultText(text));
+        return true;
+    }
+    if (actionId == kActionDisconnectAll) {
+        const std::vector<ConnId> ids = m_server.connectionIds();
+        // The answer goes out before the door shuts, or the asker never sees
+        // it: the connection it asked on is among the ones being closed.
+        completeAction(cmdId,
+                       makeActionResultText(std::to_string(ids.size())
+                                                + (ids.size() == 1 ? " client disconnected." : " clients disconnected."),
+                                            true));
+        m_disconnectAll = runtimeLoop()->timerAfter(std::chrono::milliseconds(250), [this, ids]() {
+            for (const ConnId id : ids)
+                m_server.closeConnection(id, 1001, "Disconnected by an administrator");
+        });
+        return true;
+    }
+    return false;
 }
 
 void WsTransport::dropIdleSessions()

@@ -6,7 +6,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake,
  ninja-build,
- phi-transport-api-dev (>= 2.0.0),
+ phi-transport-api-dev (>= 2.1.0),
  libphi-runtime-dev,
  nlohmann-json3-dev,
  libssl-dev

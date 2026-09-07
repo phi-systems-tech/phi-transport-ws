@@ -54,3 +54,10 @@ set_target_properties(phi_transport_ws PROPERTIES
 install(TARGETS phi_transport_ws
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/phi/plugins/transports
 )
+
+# The origin gate is header-only and depends on nothing else here, so it is
+# tested on its own rather than through a socket.
+enable_testing()
+add_executable(origin_tests tests/origin_tests.cpp)
+target_include_directories(origin_tests PRIVATE src)
+add_test(NAME origin_tests COMMAND origin_tests)

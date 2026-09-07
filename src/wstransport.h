@@ -71,11 +71,11 @@ private:
     // protocol's answer and lives in the shared header.
     static std::optional<CmdId> readCid(const Json &value);
     static std::vector<std::string> allowedOriginsFromConfig(const Json &config);
-    static bool isLoopbackOrigin(const std::string &origin);
+
     /// True when a connection that has not authenticated may send this topic.
     static bool isPreAuthTopic(std::string_view topic);
 
-    bool acceptOrigin(const std::string &origin);
+    bool acceptOrigin(const std::string &origin, const std::string &host);
     void onConnected(ConnId id, const std::string &peerAddress, std::uint16_t peerPort);
     void onDisconnected(ConnId id);
     void onTextMessage(ConnId id, std::string_view message);

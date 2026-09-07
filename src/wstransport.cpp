@@ -1,5 +1,7 @@
 #include "wstransport.h"
 
+#include "originpolicy.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -88,7 +90,9 @@ bool WsTransport::start(std::string_view configJson, std::string *errorString)
     const std::uint16_t port = portFromConfig(config);
 
     WsServer::Callbacks callbacks;
-    callbacks.acceptOrigin = [this](const std::string &origin) { return acceptOrigin(origin); };
+    callbacks.acceptOrigin = [this](const std::string &origin, const std::string &host) {
+        return acceptOrigin(origin, host);
+    };
     callbacks.connected = [this](ConnId id, const std::string &peer, std::uint16_t peerPort) {
         onConnected(id, peer, peerPort);
     };
@@ -166,15 +170,22 @@ void WsTransport::onCoreEvent(std::string_view topic, std::string_view payloadJs
     broadcastEvent(topic, payloadJson);
 }
 
-bool WsTransport::acceptOrigin(const std::string &originRaw)
+bool WsTransport::acceptOrigin(const std::string &originRaw, const std::string &host)
 {
     const std::string origin = trimmedCopy(originRaw);
     if (origin.empty()) {
-        // No Origin header: not a browser. Command-line clients and services
-        // are unaffected by this check.
+        // No Origin header: not a browser. Command-line clients, services and
+        // the phone app are unaffected by this check.
         return true;
     }
-    if (isLoopbackOrigin(origin))
+    // A page this box served, asking this box - under whichever of its names
+    // the browser was pointed at. This is what makes the UI work from a laptop
+    // on the sofa without anybody maintaining a list of the box's addresses,
+    // and it refuses a foreign page just as firmly as the list did: that page
+    // carries its own site in the origin, and the box's name in the host.
+    if (originpolicy::isSameHost(origin, host))
+        return true;
+    if (originpolicy::isLoopback(origin))
         return true;
     for (const std::string &allowed : m_allowedOrigins) {
         if (equalsIgnoreCase(allowed, origin))
@@ -182,10 +193,10 @@ bool WsTransport::acceptOrigin(const std::string &originRaw)
     }
     writeLog(LogLevel::Warn,
              makeCategory(LogCategory::Security, true),
-             "Refused a WebSocket handshake from origin %1; list it under 'allowedOrigins' in the transport config if it is yours",
-             {Scalar{origin}},
+             "Refused a WebSocket handshake from origin %1 asking for %2; list it under 'allowedOrigins' in the transport config if it is yours",
+             {Scalar{origin}, Scalar{host}},
              "ws.originRefused",
-             jsonObject({{"origin", jsonQuoted(origin)}}));
+             jsonObject({{"origin", jsonQuoted(origin)}, {"host", jsonQuoted(host)}}));
     return false;
 }
 
@@ -323,38 +334,6 @@ std::vector<std::string> WsTransport::allowedOriginsFromConfig(const Json &confi
             origins.push_back(std::move(origin));
     }
     return origins;
-}
-
-bool WsTransport::isLoopbackOrigin(const std::string &origin)
-{
-    // A UI served from the same machine keeps working out of the box, whichever
-    // port a dev server or the packaged UI happens to use. Anything else has to
-    // be named. That is the line between "the operator's own page" and
-    // "whatever site the browser happens to have open".
-    const std::string low = lowered(origin);
-    std::string rest;
-    if (low.rfind("http://", 0) == 0)
-        rest = low.substr(7);
-    else if (low.rfind("https://", 0) == 0)
-        rest = low.substr(8);
-    else
-        return false;
-
-    // The host part: up to the port or the path, brackets stripped for IPv6.
-    std::string hostPart = rest.substr(0, rest.find('/'));
-    if (!hostPart.empty() && hostPart.front() == '[') {
-        const std::size_t closing = hostPart.find(']');
-        if (closing == std::string::npos)
-            return false;
-        hostPart = hostPart.substr(1, closing - 1);
-    } else {
-        hostPart = hostPart.substr(0, hostPart.find(':'));
-    }
-
-    if (hostPart == "localhost" || hostPart == "::1")
-        return true;
-    // 127.0.0.0/8 - the whole block is loopback.
-    return hostPart.rfind("127.", 0) == 0;
 }
 
 bool WsTransport::isPreAuthTopic(std::string_view topic)

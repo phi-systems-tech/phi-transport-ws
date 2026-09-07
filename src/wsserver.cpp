@@ -332,7 +332,7 @@ bool WsServer::progressHandshake(Conn *conn)
     // The origin gate: same-origin policy does not cover WebSocket handshakes,
     // so the server checks the header itself; the policy is the transport's.
     const std::string origin = header("origin");
-    if (m_callbacks.acceptOrigin && !m_callbacks.acceptOrigin(origin)) {
+    if (m_callbacks.acceptOrigin && !m_callbacks.acceptOrigin(origin, header("host"))) {
         conn->outBuffer += "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n";
         flushConn(conn);
         dropConn(conn);

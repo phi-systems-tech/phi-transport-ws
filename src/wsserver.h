@@ -26,9 +26,11 @@ public:
 
     struct Callbacks {
         /// The handshake's origin gate. Called with the Origin header verbatim
-        /// (empty when the client sent none - not a browser); false refuses
-        /// the handshake with 403 before the socket ever speaks WebSocket.
-        std::function<bool(const std::string &origin)> acceptOrigin;
+        /// (empty when the client sent none - not a browser) and the Host header
+        /// it arrived on, which is what lets the policy tell a page this box
+        /// served from a page somewhere else served; false refuses the handshake
+        /// with 403 before the socket ever speaks WebSocket.
+        std::function<bool(const std::string &origin, const std::string &host)> acceptOrigin;
         std::function<void(ConnId id, const std::string &peerAddress, std::uint16_t peerPort)> connected;
         std::function<void(ConnId id)> disconnected;
         std::function<void(ConnId id, std::string_view text)> textMessage;

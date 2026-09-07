@@ -42,11 +42,19 @@ WebSocket transport plugin for `phi-core`, based on `phi-transport-api`.
   the same-origin policy: without this check any web page a LAN user visits
   could open a socket to this endpoint. Non-browser clients send no `Origin`
   header and are unaffected.
-  - Default allowlist: loopback origins only (`http(s)://localhost[:port]`,
-    `http(s)://127.0.0.1[:port]`, `http(s)://[::1][:port]`).
-  - Serving `phi-ui` from another host requires listing its origin explicitly
-    in `allowedOrigins` (see Configuration). A refused handshake is answered
-    with `403 Access Forbidden` and logged in the `security` category.
+  - Accepted without configuration: an origin naming the same host the request
+    asked for (its `Host` header), and loopback origins
+    (`http(s)://localhost[:port]`, `http(s)://127.0.0.1[:port]`,
+    `http(s)://[::1][:port]`).
+  - The same-host rule is what makes the packaged UI work from any device on
+    the network, under whichever of the box's names the browser was pointed
+    at, without naming each one in a config file. It gives a foreign page
+    nothing: that page carries its own site in `Origin` while `Host` names the
+    box, and the two can never agree.
+  - `allowedOrigins` remains for the case the rule does not cover: a UI served
+    from a *different* host than the one core answers on. A refused handshake
+    is answered with `403 Access Forbidden` and logged in the `security`
+    category, naming both headers.
 - Sessions expire. Core states how long a session may sit without a single call
   (`sessionIdleSec`, from the `security.sessionIdleSec` setting) in the answer
   that hands out the token, and this transport closes the connection once that

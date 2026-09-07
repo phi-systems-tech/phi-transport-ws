@@ -15,10 +15,11 @@ Canonical cross-transport semantics are defined in `phi-transport-api/PROTOCOLL.
 - Transport: WebSocket (`ws://` / `wss://`)
 - Subprotocol required by this transport: `phi-core-ws.v1`
 - One WebSocket text frame must contain one JSON object envelope
-- If the handshake carries an `Origin` header, it must be a loopback origin or
-  listed in the transport's `allowedOrigins` config; otherwise the upgrade is
-  answered with `403 Access Forbidden`. Requests without `Origin` (non-browser
-  clients) are not checked.
+- If the handshake carries an `Origin` header, it must name the same host as
+  the request's own `Host` header, or be a loopback origin, or be listed in the
+  transport's `allowedOrigins` config; otherwise the upgrade is answered with
+  `403 Access Forbidden`. Requests without `Origin` (non-browser clients) are
+  not checked.
 
 ## Envelope
 

@@ -1,92 +1,11 @@
-phi-transport-ws (0.1.6~git202609060740.347e850-1) unstable; urgency=medium
+phi-transport-ws (0.1.6~git202609071848.a9e54d9-1) unstable; urgency=medium
 
-  * Contract 2.1.0: the management surface - a client and session summary,
-    "Show sessions" and "Disconnect all clients".
+  * The origin gate accepts a browser whose Origin names the same host the
+    request asked for, so the packaged UI works from any device on the network
+    under any of the box's names without listing each one in allowedOrigins.
+    A foreign page still cannot match and is still refused.
+  * Loopback is parsed as four octets rather than matched as a "127." prefix:
+    127.example.com is a registrable name, not this machine.
 
- -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 06 Sep 2026 07:40:03 +0200
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 07 Sep 2026 18:48:59 +0200
 
-phi-transport-ws (0.1.6~git202609021519.4d8fd3e-1) unstable; urgency=medium
-
-  * Contract 2.0.0: the plugin runs on the runtime loop core provides and
-    speaks RFC 6455 through its own WsServer - handshake with origin gate
-    and subprotocol echo, masking enforced, fragmentation, ping/pong,
-    clean closes. Qt leaves the plugin; depends on libphi-runtime0 and
-    OpenSSL through shlibdeps.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 02 Sep 2026 15:19:26 +0200
-
-phi-transport-ws (0.1.6~git202608301632.b60d581-1) trixie; urgency=medium
-
-  * The unauthenticated refusal names both halves of the login.
-
- -- Marius Schumacher <google@phisys.com>  Sun, 30 Aug 2026 16:34:40 +0200
-
-phi-transport-ws (0.1.6~git202608301437.86be477-1) trixie; urgency=medium
-
-  * Declares the source format the version already implied.
-
- -- Marius Schumacher <google@phisys.com>  Sun, 30 Aug 2026 14:37:12 +0200
-
-phi-transport-ws (0.1.6~git202608211603.5d36625-1) trixie; urgency=medium
-
-  * The connection is the session. A socket starts unauthenticated and may send
-    only the handshake, ping and the auth topics; everything else is refused
-    here with "unauthenticated" and never reaches core. The identity passed to
-    core comes from the connection, not from the frame.
-  * Events go only to authenticated connections. Live channel state used to
-    reach anything that could open a socket.
-  * Browser origins are checked at the handshake, which is exempt from the
-    same-origin policy: loopback always, anything else via allowedOrigins in the
-    transport config, everything else answered with 403.
-  * Idle connections are closed on the budget core states with the session.
-    Pre-auth topics do not extend it, so a keepalive cannot hold a session open.
-  * TLS is stated, not implied: this plugin does not terminate it, so exposing
-    the endpoint beyond the local host means a reverse proxy in front of it.
- -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 21 Aug 2026 16:03:45 +0200
-
-phi-transport-ws (0.1.5~git202608201904.63780c6-1) trixie; urgency=medium
-
-  * Rebuild against phi-transport-api 1.4.0: plain shared-object plugin with
-    exported C entry points instead of a Qt plugin.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 20 Aug 2026 19:04:34 +0200
-
-phi-transport-ws (0.1.4~git202608201704.562c6ef-1) trixie; urgency=medium
-
-  * Rebuild against phi-transport-api 1.3.0: log fields and the sync-rejection
-    payload are assembled as JSON text instead of through QJsonObject.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 20 Aug 2026 17:04:26 +0200
-
-phi-transport-ws (0.1.3~git202608192352.c298a94-1) trixie; urgency=medium
-
-  * Assemble envelopes from UTF-8 JSON text: the transport API data path is text, so
-    a forwarded event is no longer re-parsed on its way to the wire.
-  * Rebuild against phi-transport-api 1.2.0.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 19 Aug 2026 23:52:07 +0200
-
-phi-transport-ws (0.1.2~git202608192219.0dc6d4b-1) trixie; urgency=medium
-
-  * Derive from the new TransportPluginBase and report kTransportApiVersion, so
-    phi-core's transport version gate accepts this build (F-38).
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 19 Aug 2026 22:19:06 +0200
-
-phi-transport-ws (0.1.1~git20260611.7f0c1c9-1) trixie; urgency=medium
-
-  * Route WebSocket transport logs through core logging.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 11 Jun 2026 23:27:48 +0200
-
-phi-transport-ws (0.1.0-2) trixie; urgency=medium
-
-  * Rebuild package for trixie repository publishing.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 15 Mar 2026 20:55:00 +0100
-
-phi-transport-ws (0.1.0-1) unstable; urgency=medium
-
-  * Initial Debian package for WebSocket transport plugin.
-
- -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 07 Mar 2026 10:25:00 +0100

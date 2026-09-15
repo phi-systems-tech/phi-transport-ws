@@ -446,7 +446,7 @@ JsonText WsTransport::describeManagement() const
         kActionDisconnectAll, "Disconnect all clients",
         "Closes every WebSocket connection, this one included. Clients reconnect and log in again.",
         "\"danger\":true,\"confirm\":" + jsonObject({{"title", jsonQuoted("Disconnect every client?")},
-                                                       {"okText", jsonQuoted("Disconnect")}}));
+                                                       {"okLabel", jsonQuoted("Disconnect")}}));
     return makeManagementDescription(summary, {sessionsAction, disconnectAction});
 }
 

@@ -1,3 +1,9 @@
+phi-transport-ws (0.1.6~git202609151501.448e58e-1) unstable; urgency=medium
+
+  * Confirmation in the shared shape: okLabel
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 15 Sep 2026 15:01:22 +0200
+
 phi-transport-ws (0.1.6~git202609071848.a9e54d9-1) unstable; urgency=medium
 
   * The origin gate accepts a browser whose Origin names the same host the

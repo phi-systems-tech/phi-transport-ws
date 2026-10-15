@@ -35,6 +35,8 @@ public:
 protected:
     void onCoreAsyncResult(CmdId cmdId, std::string_view payloadJson) override;
     void onCoreEvent(std::string_view topic, std::string_view payloadJson) override;
+    // Contract 2.2.0: sessions core ended - closed here, not only refused.
+    void onSessionsEnded(const std::vector<std::string> &tokens) override;
 
     // The management surface (contract 2.1.0): how many clients and sessions
     // there are, a list of the sessions, and the door for everyone at once.

@@ -514,6 +514,31 @@ void WsTransport::dropIdleSessions()
     }
 }
 
+void WsTransport::onSessionsEnded(const std::vector<std::string> &tokens)
+{
+    // Core refuses the next command from these already. What is left is the
+    // other direction: an open connection keeps receiving the house's events
+    // until its holder is closed out - a user who was just disabled or deleted
+    // would go on watching every channel (phi-core F-65).
+    std::vector<std::pair<ConnId, std::string>> ended;
+    for (const auto &entry : m_sessions) {
+        if (std::find(tokens.begin(), tokens.end(), entry.second.token) != tokens.end())
+            ended.emplace_back(entry.first, entry.second.clientId);
+    }
+    for (const auto &[id, clientId] : ended) {
+        m_sessions.erase(id);
+        writeLog(LogLevel::Info,
+                 makeCategory(LogCategory::Security),
+                 "Closing a connection whose session core ended (client '%1')",
+                 {Scalar{clientId}},
+                 "ws.sessionEnded",
+                 jsonObject({{"clientId", jsonQuoted(clientId)}}));
+        // 1008: policy violation - the session this connection spoke with is
+        // gone; the client logs in again or is told it cannot.
+        m_server.closeConnection(id, 1008, "Session ended");
+    }
+}
+
 void WsTransport::send(ConnId id,
                        std::string_view type,
                        std::string_view topic,

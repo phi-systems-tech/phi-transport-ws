@@ -71,7 +71,6 @@ private:
     static std::uint16_t portFromConfig(const Json &config);
     // Which JSON shapes a cid may arrive in; what counts as a valid one is the
     // protocol's answer and lives in the shared header.
-    static std::optional<CmdId> readCid(const Json &value);
     static std::vector<std::string> allowedOriginsFromConfig(const Json &config);
 
     /// True when a connection that has not authenticated may send this topic.

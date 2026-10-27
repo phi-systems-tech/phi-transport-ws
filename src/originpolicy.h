@@ -9,28 +9,15 @@
 // the one rule here worth reading on its own and worth testing on its own.
 #pragma once
 
-#include <algorithm>
-#include <cctype>
+#include <phi/runtime/str.h>
+
 #include <string>
+#include <string_view>
 
 namespace phicore::transport::ws::originpolicy {
 
-inline std::string lowered(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
-
-inline std::string trimmed(std::string text)
-{
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-        text.pop_back();
-    std::size_t start = 0;
-    while (start < text.size() && (text[start] == ' ' || text[start] == '\t'))
-        ++start;
-    return text.substr(start);
-}
+inline std::string lowered(std::string_view text) { return phi::str::toLower(text); }
+inline std::string trimmed(std::string_view text) { return phi::str::trimmed(text); }
 
 /**
  * The `host[:port]` an origin names, lowercased; empty for anything that is not

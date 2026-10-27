@@ -2,9 +2,13 @@
 
 #include "originpolicy.h"
 
+#include <commandframe.h>
+#include <phi/runtime/str.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <variant>
 
 namespace phicore::transport::ws {
 
@@ -24,28 +28,6 @@ std::int64_t wallClockMs()
 {
     using namespace std::chrono;
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-}
-
-std::string trimmedCopy(std::string text)
-{
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-        text.pop_back();
-    std::size_t start = 0;
-    while (start < text.size() && (text[start] == ' ' || text[start] == '\t'))
-        ++start;
-    return text.substr(start);
-}
-
-std::string lowered(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
-
-bool equalsIgnoreCase(const std::string &a, const std::string &b)
-{
-    return lowered(a) == lowered(b);
 }
 
 } // namespace
@@ -172,7 +154,7 @@ void WsTransport::onCoreEvent(std::string_view topic, std::string_view payloadJs
 
 bool WsTransport::acceptOrigin(const std::string &originRaw, const std::string &host)
 {
-    const std::string origin = trimmedCopy(originRaw);
+    const std::string origin = phi::str::trimmed(originRaw);
     if (origin.empty()) {
         // No Origin header: not a browser. Command-line clients, services and
         // the phone app are unaffected by this check.
@@ -188,7 +170,7 @@ bool WsTransport::acceptOrigin(const std::string &originRaw, const std::string &
     if (originpolicy::isLoopback(origin))
         return true;
     for (const std::string &allowed : m_allowedOrigins) {
-        if (equalsIgnoreCase(allowed, origin))
+        if (phi::str::equalsIgnoreCase(allowed, origin))
             return true;
     }
     writeLog(LogLevel::Warn,
@@ -233,37 +215,20 @@ void WsTransport::onDisconnected(ConnId id)
 
 void WsTransport::onTextMessage(ConnId id, std::string_view message)
 {
-    const Json doc = Json::parse(message, nullptr, false);
-    if (!doc.is_object()) {
-        sendProtocolError(id, std::nullopt, kErrorCodeInvalidJson, kMessageInvalidJson);
+    auto parsed = parseCommandFrame(message);
+    if (const auto *error = std::get_if<FrameError>(&parsed)) {
+        sendProtocolError(id, error->cid, error->code, error->message);
         return;
     }
-
-    const std::string type = doc.value("type", std::string());
-    const std::string topic = trimmedCopy(doc.value("topic", std::string()));
-    const Json payload = doc.contains("payload") && doc["payload"].is_object()
-        ? doc["payload"] : Json::object();
-
-    const std::optional<CmdId> cid = readCid(doc.contains("cid") ? doc["cid"] : Json());
-    if (!cid.has_value()) {
-        sendProtocolError(id, std::nullopt, kErrorCodeMissingCid, kMessageMissingCid);
-        return;
-    }
-
-    if (type != kEnvelopeTypeCmd) {
-        sendProtocolError(id, cid, kErrorCodeInvalidType, kMessageInvalidType);
-        return;
-    }
-
-    if (topic.empty()) {
-        sendProtocolError(id, cid, kErrorCodeMissingTopic, kMessageMissingTopic);
-        return;
-    }
+    const CommandFrame &frame = std::get<CommandFrame>(parsed);
+    const std::optional<CmdId> cid = frame.cid;
+    const std::string &topic = frame.topic;
+    const Json &payload = frame.payload;
 
     // A connection that has not authenticated gets the handshake and the login,
     // and nothing else. Core would refuse the rest anyway, but a socket that
     // answers to anyone should not be able to make it do the refusing (F-42).
-    const std::string requestClientId = payload.value("clientId", std::string());
+    const std::string requestClientId = stringMember(payload, "clientId");
     if (m_sessions.find(id) == m_sessions.end() && !isPreAuthTopic(topic)) {
         sendProtocolError(id, cid, "unauthenticated",
                           "Authenticate with sync.auth.begin.set and sync.auth.login.set"
@@ -280,7 +245,7 @@ void WsTransport::onTextMessage(ConnId id, std::string_view message)
     }
 
     // Only used to remember a session the client already held when it said hello.
-    const std::string requestAuthToken = trimmedCopy(payload.value("authToken", std::string()));
+    const std::string requestAuthToken = phi::str::trimmed(stringMember(payload, "authToken"));
 
     // The API takes the payload as text; this transport parsed the frame to read the
     // envelope, so the sub-object is serialized once here. That extra step is the
@@ -309,15 +274,6 @@ bool WsTransport::isConfigValid(const Json &config, std::string *errorString)
     return true;
 }
 
-std::optional<CmdId> WsTransport::readCid(const Json &value)
-{
-    if (value.is_number())
-        return cidFromNumber(value.get<double>());
-    if (value.is_string())
-        return cidFromString(value.get<std::string>());
-    return std::nullopt;
-}
-
 std::vector<std::string> WsTransport::allowedOriginsFromConfig(const Json &config)
 {
     std::vector<std::string> origins;
@@ -329,7 +285,7 @@ std::vector<std::string> WsTransport::allowedOriginsFromConfig(const Json &confi
     for (const Json &entry : *it) {
         if (!entry.is_string())
             continue;
-        std::string origin = trimmedCopy(entry.get<std::string>());
+        std::string origin = phi::str::trimmed(entry.get<std::string>());
         if (!origin.empty())
             origins.push_back(std::move(origin));
     }
@@ -376,7 +332,7 @@ void WsTransport::trackAuthOutcome(ConnId id,
         static_cast<std::int64_t>(response.value("sessionIdleSec", 0.0)) * 1000;
     const std::int64_t now = wallClockMs();
 
-    const std::string token = trimmedCopy(response.value("token", std::string()));
+    const std::string token = phi::str::trimmed(response.value("token", std::string()));
     if (!token.empty()) {
         ClientSession session;
         session.token = token;
@@ -403,7 +359,7 @@ void WsTransport::trackAuthOutcome(ConnId id,
 std::string WsTransport::hostFromConfig(const Json &config)
 {
     if (config.is_object()) {
-        const std::string host = trimmedCopy(config.value("host", std::string()));
+        const std::string host = phi::str::trimmed(config.value("host", std::string()));
         if (!host.empty())
             return host;
     }
@@ -564,16 +520,7 @@ void WsTransport::sendCmdResponse(ConnId id,
                                   const std::string &cmdTopic,
                                   std::string_view payloadJson)
 {
-    // The only outbound path that parses: it adds `error: null` *if absent*, and
-    // deciding that from raw text would be a substring guess. Command responses are
-    // user-driven, so one parse here is the cheap side of the trade.
-    Json out = Json::parse(payloadJson, nullptr, false);
-    if (!out.is_object())
-        out = Json::object();
-    out["cmd"] = cmdTopic;
-    if (!out.contains("error"))
-        out["error"] = nullptr;
-    const std::string bytes = out.dump();
+    const std::string bytes = makeCmdResponsePayload(cmdTopic, payloadJson);
     send(id, kEnvelopeTypeResponse, kTopicCmdResponse, cid, bytes);
 }
 

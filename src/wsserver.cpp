@@ -1,5 +1,7 @@
 #include "wsserver.h"
 
+#include <phi/runtime/str.h>
+
 #include <openssl/sha.h>
 
 #include <arpa/inet.h>
@@ -28,22 +30,9 @@ constexpr std::uint8_t kOpClose = 0x8;
 constexpr std::uint8_t kOpPing = 0x9;
 constexpr std::uint8_t kOpPong = 0xA;
 
-std::string toLower(std::string_view text)
-{
-    std::string out(text);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
+using phi::str::toLower;
 
-std::string_view trimmed(std::string_view text)
-{
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-        text.remove_prefix(1);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r'))
-        text.remove_suffix(1);
-    return text;
-}
+std::string_view trimmed(std::string_view text) { return phi::str::trimmedView(text); }
 
 /// True when a comma-separated header value names `token` (case-insensitive) -
 /// the shape of Connection: keep-alive, Upgrade.
@@ -63,35 +52,6 @@ bool listContainsToken(std::string_view value, std::string_view token)
     return false;
 }
 
-std::string base64Encode(const unsigned char *data, std::size_t length)
-{
-    static constexpr char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(((length + 2) / 3) * 4);
-    std::size_t i = 0;
-    for (; i + 3 <= length; i += 3) {
-        const std::uint32_t chunk = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
-        out += kAlphabet[(chunk >> 18) & 0x3F];
-        out += kAlphabet[(chunk >> 12) & 0x3F];
-        out += kAlphabet[(chunk >> 6) & 0x3F];
-        out += kAlphabet[chunk & 0x3F];
-    }
-    if (i + 1 == length) {
-        const std::uint32_t chunk = data[i] << 16;
-        out += kAlphabet[(chunk >> 18) & 0x3F];
-        out += kAlphabet[(chunk >> 12) & 0x3F];
-        out += "==";
-    } else if (i + 2 == length) {
-        const std::uint32_t chunk = (data[i] << 16) | (data[i + 1] << 8);
-        out += kAlphabet[(chunk >> 18) & 0x3F];
-        out += kAlphabet[(chunk >> 12) & 0x3F];
-        out += kAlphabet[(chunk >> 6) & 0x3F];
-        out += '=';
-    }
-    return out;
-}
-
 std::string acceptKeyFor(std::string_view clientKey)
 {
     // The fixed GUID is the protocol's (RFC 6455 §1.3).
@@ -99,7 +59,7 @@ std::string acceptKeyFor(std::string_view clientKey)
     material += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     unsigned char digest[SHA_DIGEST_LENGTH];
     ::SHA1(reinterpret_cast<const unsigned char *>(material.data()), material.size(), digest);
-    return base64Encode(digest, sizeof(digest));
+    return phi::str::toBase64(std::string_view(reinterpret_cast<const char *>(digest), sizeof(digest)));
 }
 
 } // namespace

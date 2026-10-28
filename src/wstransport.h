@@ -72,6 +72,10 @@ private:
     // Which JSON shapes a cid may arrive in; what counts as a valid one is the
     // protocol's answer and lives in the shared header.
     static std::vector<std::string> allowedOriginsFromConfig(const Json &config);
+    /// The public names a browser may reach this box under: `allowedHosts`
+    /// plus the host of every `allowedOrigins` entry.
+    static std::vector<std::string> allowedHostsFromConfig(const Json &config,
+                                                           const std::vector<std::string> &origins);
 
     /// True when a connection that has not authenticated may send this topic.
     static bool isPreAuthTopic(std::string_view topic);
@@ -80,6 +84,10 @@ private:
     void onConnected(ConnId id, const std::string &peerAddress, std::uint16_t peerPort);
     void onDisconnected(ConnId id);
     void onTextMessage(ConnId id, std::string_view message);
+    void onRefused(const std::string &peerAddress, std::string_view reason);
+    /// Counts a connection that has not logged in; at the cap the oldest such
+    /// connection makes room.
+    void trackUnauthenticated(ConnId id);
 
     /// Closes the connections whose session has sat idle past its budget.
     void dropIdleSessions();
@@ -112,6 +120,12 @@ private:
     WsServer m_server;
     bool m_running = false;
     std::vector<std::string> m_allowedOrigins;
+    std::vector<std::string> m_allowedHosts;
+    /// Open connections without a session, and since when. Bounded, and each
+    /// one only for so long: logging in is what a connection is for.
+    std::map<ConnId, std::int64_t> m_unauthenticatedSince;
+    std::int64_t m_lastRefusalLogMs = 0;
+    std::uint64_t m_refusalsSinceLog = 0;
     phi::runtime::Timer m_idleSweep;
     /// The pause between answering "disconnect all" and doing it.
     phi::runtime::Timer m_disconnectAll;

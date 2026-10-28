@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cerrno>
 #include <cstring>
@@ -22,6 +23,24 @@ namespace {
 
 constexpr std::size_t kMaxHandshakeBytes = 16 * 1024;
 constexpr std::size_t kMaxMessageBytes = 16 * 1024 * 1024;
+
+// What one client may make this process hold. On pi5 the transport runs inside
+// phi-core, so each of these is a bound on core's memory and descriptors, not
+// only on a sidecar's, and anything on the LAN can open a socket.
+//
+// Bytes queued for a client that does not read. Events keep coming whether it
+// reads or not; past this the client is gone rather than core's memory. Well
+// above the largest answer core gives (the sync snapshot of a big house).
+constexpr std::size_t kMaxPendingOutBytes = 32 * 1024 * 1024;
+// Connections at all, and connections still in the HTTP handshake. Beyond them
+// a new socket is closed on accept.
+constexpr std::size_t kMaxConnections = 256;
+constexpr std::size_t kMaxHandshaking = 32;
+// A browser sends the whole handshake at once; a socket that has not finished
+// it by now is not going to.
+constexpr std::chrono::milliseconds kHandshakeTimeout{10000};
+// How long a closed connection may take to write out its last bytes.
+constexpr std::chrono::milliseconds kDrainTimeout{2000};
 
 constexpr std::uint8_t kOpContinuation = 0x0;
 constexpr std::uint8_t kOpText = 0x1;
@@ -155,14 +174,18 @@ void WsServer::close()
 {
     // Contract calls run on the loop's thread but never inside one of these
     // watches' own callbacks, so the teardown is direct.
-    for (auto &entry : m_conns) {
-        Conn *conn = entry.second.get();
-        conn->closed = true;
-        conn->readWatch.reset();
-        conn->writeWatch.reset();
-        ::close(conn->fd);
+    for (auto *conns : {&m_conns, &m_draining}) {
+        for (auto &entry : *conns) {
+            Conn *conn = entry.second.get();
+            conn->closed = true;
+            conn->readWatch.reset();
+            conn->writeWatch.reset();
+            conn->handshakeDeadline.reset();
+            conn->drainDeadline.reset();
+            ::close(conn->fd);
+        }
+        conns->clear();
     }
-    m_conns.clear();
     m_listenWatch.reset();
     if (m_listenFd >= 0) {
         ::close(m_listenFd);
@@ -182,23 +205,32 @@ void WsServer::acceptConnections()
                 continue;
             return;
         }
+        char text[INET6_ADDRSTRLEN] = {};
+        std::uint16_t peerPort = 0;
+        if (peer.ss_family == AF_INET) {
+            const auto *a4 = reinterpret_cast<const sockaddr_in *>(&peer);
+            ::inet_ntop(AF_INET, &a4->sin_addr, text, sizeof(text));
+            peerPort = ntohs(a4->sin_port);
+        } else if (peer.ss_family == AF_INET6) {
+            const auto *a6 = reinterpret_cast<const sockaddr_in6 *>(&peer);
+            ::inet_ntop(AF_INET6, &a6->sin6_addr, text, sizeof(text));
+            peerPort = ntohs(a6->sin6_port);
+        }
+
+        if (m_conns.size() >= kMaxConnections || handshakingCount() >= kMaxHandshaking) {
+            ::close(fd);
+            refuse(text, "too many connections");
+            continue;
+        }
+
         const int one = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
         auto conn = std::make_shared<Conn>();
         conn->id = m_nextId++;
         conn->fd = fd;
-        char text[INET6_ADDRSTRLEN] = {};
-        if (peer.ss_family == AF_INET) {
-            const auto *a4 = reinterpret_cast<const sockaddr_in *>(&peer);
-            ::inet_ntop(AF_INET, &a4->sin_addr, text, sizeof(text));
-            conn->peerPort = ntohs(a4->sin_port);
-        } else if (peer.ss_family == AF_INET6) {
-            const auto *a6 = reinterpret_cast<const sockaddr_in6 *>(&peer);
-            ::inet_ntop(AF_INET6, &a6->sin6_addr, text, sizeof(text));
-            conn->peerPort = ntohs(a6->sin6_port);
-        }
         conn->peerAddress = text;
+        conn->peerPort = peerPort;
 
         Conn *raw = conn.get();
         conn->readWatch = m_loop->watchFd(fd, phi::runtime::Loop::FdEvent::Read,
@@ -206,7 +238,15 @@ void WsServer::acceptConnections()
         conn->writeWatch = m_loop->watchFd(fd, phi::runtime::Loop::FdEvent::Write,
                                            [this, raw]() { onWritable(raw); });
         conn->writeWatch.setEnabled(false);
-        m_conns.emplace(raw->id, std::move(conn));
+        const ConnId id = raw->id;
+        conn->handshakeDeadline = m_loop->timerAfter(kHandshakeTimeout, [this, id]() {
+            const auto it = m_conns.find(id);
+            if (it == m_conns.end() || it->second->open)
+                return;
+            refuse(it->second->peerAddress, "handshake timeout");
+            dropConn(it->second.get(), Drain::No);
+        });
+        m_conns.emplace(id, std::move(conn));
     }
 }
 
@@ -215,6 +255,10 @@ void WsServer::onReadable(Conn *conn)
     if (conn->closed)
         return;
 
+    // The peer's FIN can arrive in the same read as its last frames. Those
+    // are still the client's: they are handled, and their answers drained,
+    // before the connection goes.
+    bool peerClosed = false;
     char chunk[32 * 1024];
     while (true) {
         const ssize_t got = ::read(conn->fd, chunk, sizeof(chunk));
@@ -222,30 +266,34 @@ void WsServer::onReadable(Conn *conn)
             conn->inBuffer.append(chunk, static_cast<std::size_t>(got));
             continue;
         }
-        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        if (got == 0) {
+            peerClosed = true;
             break;
-        if (got < 0 && errno == EINTR)
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            break;
+        if (errno == EINTR)
             continue;
-        dropConn(conn); // peer closed, or a read error
+        dropConn(conn, Drain::No); // a read error
         return;
     }
 
-    if (!conn->open) {
-        if (!progressHandshake(conn))
-            return;
-        if (!conn->open)
-            return; // request still incomplete
-    }
-    processFrames(conn);
+    if (!conn->open && !progressHandshake(conn))
+        return;
+    if (conn->open)
+        processFrames(conn);
+    if (peerClosed)
+        dropConn(conn, Drain::Yes);
 }
 
 bool WsServer::progressHandshake(Conn *conn)
 {
     const std::size_t end = conn->inBuffer.find("\r\n\r\n");
     if (end == std::string::npos) {
-        if (conn->inBuffer.size() > kMaxHandshakeBytes)
-            dropConn(conn);
-        return conn->inBuffer.size() <= kMaxHandshakeBytes;
+        if (conn->inBuffer.size() <= kMaxHandshakeBytes)
+            return true;
+        dropConn(conn, Drain::No);
+        return false;
     }
 
     const std::string_view request(conn->inBuffer.data(), end + 2);
@@ -256,7 +304,7 @@ bool WsServer::progressHandshake(Conn *conn)
     if (requestLine.substr(0, 4) != "GET ") {
         conn->outBuffer += "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
         flushConn(conn);
-        dropConn(conn);
+        dropConn(conn, Drain::Yes);
         return false;
     }
 
@@ -285,7 +333,7 @@ bool WsServer::progressHandshake(Conn *conn)
         || header("sec-websocket-version") != "13") {
         conn->outBuffer += "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
         flushConn(conn);
-        dropConn(conn);
+        dropConn(conn, Drain::Yes);
         return false;
     }
 
@@ -295,7 +343,7 @@ bool WsServer::progressHandshake(Conn *conn)
     if (m_callbacks.acceptOrigin && !m_callbacks.acceptOrigin(origin, header("host"))) {
         conn->outBuffer += "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n";
         flushConn(conn);
-        dropConn(conn);
+        dropConn(conn, Drain::Yes);
         return false;
     }
 
@@ -315,6 +363,7 @@ bool WsServer::progressHandshake(Conn *conn)
     conn->inBuffer.erase(0, end + 4);
     conn->outBuffer += response;
     conn->open = true;
+    conn->handshakeDeadline.reset();
     flushConn(conn);
     if (conn->closed)
         return false;
@@ -423,7 +472,7 @@ void WsServer::handleControlFrame(Conn *conn, std::uint8_t opcode, std::string_v
             conn->sentClose = true;
             sendFrame(conn, kOpClose, payload.substr(0, 2)); // echo the code
         }
-        dropConn(conn);
+        dropConn(conn, Drain::Yes);
     }
 }
 
@@ -446,6 +495,13 @@ void WsServer::sendFrame(Conn *conn, std::uint8_t opcode, std::string_view paylo
             frame += static_cast<char>((static_cast<std::uint64_t>(payload.size()) >> (8 * i)) & 0xFF);
     }
     frame += payload;
+    // A client that stopped reading would otherwise grow this without end.
+    // One frame larger than the cap still goes to a client that has caught up.
+    if (!conn->outBuffer.empty() && conn->outBuffer.size() + frame.size() > kMaxPendingOutBytes) {
+        refuse(conn->peerAddress, "send queue full");
+        dropConn(conn, Drain::No);
+        return;
+    }
     conn->outBuffer += frame;
     flushConn(conn);
 }
@@ -483,7 +539,7 @@ void WsServer::closeConnection(ConnId id, std::uint16_t code, std::string_view r
         payload += reason;
         sendFrame(conn, kOpClose, payload);
     }
-    dropConn(conn);
+    dropConn(conn, Drain::Yes);
 }
 
 void WsServer::failConnection(Conn *conn, std::uint16_t code, std::string_view reason)
@@ -496,37 +552,48 @@ void WsServer::failConnection(Conn *conn, std::uint16_t code, std::string_view r
         payload += reason;
         sendFrame(conn, kOpClose, payload);
     }
-    dropConn(conn);
+    dropConn(conn, Drain::Yes);
 }
 
-void WsServer::flushConn(Conn *conn)
+WsServer::Flush WsServer::writeOut(Conn *conn)
 {
     while (!conn->outBuffer.empty()) {
-        const ssize_t sent = ::write(conn->fd, conn->outBuffer.data(), conn->outBuffer.size());
+        const ssize_t sent = ::send(conn->fd, conn->outBuffer.data(), conn->outBuffer.size(), MSG_NOSIGNAL);
         if (sent > 0) {
             conn->outBuffer.erase(0, static_cast<std::size_t>(sent));
             continue;
         }
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             conn->writeWatch.setEnabled(true);
-            return;
+            return Flush::Pending;
         }
         if (sent < 0 && errno == EINTR)
             continue;
-        dropConn(conn);
-        return;
+        return Flush::Failed;
     }
     conn->writeWatch.setEnabled(false);
+    return Flush::Done;
+}
+
+void WsServer::flushConn(Conn *conn)
+{
+    if (conn->closed)
+        return;
+    if (writeOut(conn) == Flush::Failed)
+        dropConn(conn, Drain::No);
 }
 
 void WsServer::onWritable(Conn *conn)
 {
-    if (conn->closed)
+    if (!conn->closed) {
+        flushConn(conn);
         return;
-    flushConn(conn);
+    }
+    if (conn->draining && writeOut(conn) != Flush::Pending)
+        finishDrain(conn->id);
 }
 
-void WsServer::dropConn(Conn *conn)
+void WsServer::dropConn(Conn *conn, Drain drain)
 {
     if (conn->closed)
         return;
@@ -540,16 +607,56 @@ void WsServer::dropConn(Conn *conn)
     const bool wasOpen = victim->open;
     const ConnId id = victim->id;
 
-    // The watches die on the next loop turn: this may run inside one of their
-    // own callbacks, and a watch must not be reset from inside itself.
-    m_loop->post([victim]() {
-        victim->readWatch.reset();
-        victim->writeWatch.reset();
-        ::close(victim->fd);
-    });
+    if (drain == Drain::Yes && !victim->outBuffer.empty()) {
+        // Nothing more is read; the write watch is already on, because bytes
+        // are only left behind when the socket said it was full.
+        victim->draining = true;
+        victim->readWatch.setEnabled(false);
+        victim->drainDeadline = m_loop->timerAfter(kDrainTimeout, [this, id]() { finishDrain(id); });
+        m_draining.emplace(id, std::move(victim));
+    } else {
+        reap(std::move(victim));
+    }
 
     if (wasOpen && m_callbacks.disconnected)
         m_callbacks.disconnected(id);
+}
+
+void WsServer::finishDrain(ConnId id)
+{
+    const auto it = m_draining.find(id);
+    if (it == m_draining.end())
+        return;
+    std::shared_ptr<Conn> conn = std::move(it->second);
+    m_draining.erase(it);
+    conn->draining = false;
+    reap(std::move(conn));
+}
+
+void WsServer::reap(std::shared_ptr<Conn> conn)
+{
+    // The watches and timers die on the next loop turn: this may run inside
+    // one of their own callbacks, and none may be reset from inside itself.
+    m_loop->post([conn]() {
+        conn->readWatch.reset();
+        conn->writeWatch.reset();
+        conn->handshakeDeadline.reset();
+        conn->drainDeadline.reset();
+        ::close(conn->fd);
+    });
+}
+
+void WsServer::refuse(const std::string &peerAddress, std::string_view reason)
+{
+    if (m_callbacks.refused)
+        m_callbacks.refused(peerAddress, reason);
+}
+
+std::size_t WsServer::handshakingCount() const
+{
+    return static_cast<std::size_t>(std::count_if(m_conns.begin(), m_conns.end(), [](const auto &entry) {
+        return !entry.second->open;
+    }));
 }
 
 } // namespace phicore::transport::ws

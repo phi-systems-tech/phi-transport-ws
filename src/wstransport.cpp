@@ -24,6 +24,17 @@ constexpr std::uint16_t kDefaultPort = 5040;
 // counted in minutes is not worth a timer per connection.
 constexpr int kIdleSweepIntervalMs = 5000;
 
+// Connections that have not logged in. A login takes a few round trips, so the
+// cap evicts the oldest rather than refusing the newest: a flood of idle
+// sockets then pushes out its own kind, not the household's login. The
+// deadline is generous because the UI holds its socket open on the login page.
+constexpr std::size_t kMaxUnauthenticated = 64;
+constexpr std::int64_t kLoginTimeoutMs = 10 * 60 * 1000;
+
+// Refused connections are logged at most this often, with a count, so a flood
+// does not become a flood in the journal too.
+constexpr std::int64_t kRefusalLogIntervalMs = 60 * 1000;
+
 std::int64_t wallClockMs()
 {
     using namespace std::chrono;
@@ -80,6 +91,7 @@ bool WsTransport::start(std::string_view configJson, std::string *errorString)
     };
     callbacks.disconnected = [this](ConnId id) { onDisconnected(id); };
     callbacks.textMessage = [this](ConnId id, std::string_view text) { onTextMessage(id, text); };
+    callbacks.refused = [this](const std::string &peer, std::string_view reason) { onRefused(peer, reason); };
 
     std::string listenError;
     // UI clients request the protocol string "phi-core-ws.v1". Without an
@@ -89,6 +101,7 @@ bool WsTransport::start(std::string_view configJson, std::string *errorString)
         return fail(std::move(listenError));
 
     m_allowedOrigins = allowedOriginsFromConfig(config);
+    m_allowedHosts = allowedHostsFromConfig(config, m_allowedOrigins);
     m_idleSweep = runtimeLoop()->timerEvery(std::chrono::milliseconds(kIdleSweepIntervalMs),
                                             [this]() { dropIdleSessions(); });
     m_running = true;
@@ -111,6 +124,7 @@ void WsTransport::stop()
     m_disconnectAll.reset();
     m_server.close();
     m_sessions.clear();
+    m_unauthenticatedSince.clear();
     m_pendingCommands.clear();
     m_running = false;
 }
@@ -160,6 +174,19 @@ bool WsTransport::acceptOrigin(const std::string &originRaw, const std::string &
         // the phone app are unaffected by this check.
         return true;
     }
+    // DNS rebinding: a page whose own name was re-pointed at this box arrives
+    // with a matching Origin and Host, and only the name gives it away. A
+    // browser that reached the box under a public name the household never
+    // listed is refused before any origin rule is asked.
+    if (!originpolicy::isRebindSafeHost(host, m_allowedHosts)) {
+        writeLog(LogLevel::Warn,
+                 makeCategory(LogCategory::Security, true),
+                 "Refused a WebSocket handshake for host %1 from origin %2; list the name under 'allowedHosts' in the transport config if the box is reached under it",
+                 {Scalar{host}, Scalar{origin}},
+                 "ws.hostRefused",
+                 jsonObject({{"origin", jsonQuoted(origin)}, {"host", jsonQuoted(host)}}));
+        return false;
+    }
     // A page this box served, asking this box - under whichever of its names
     // the browser was pointed at. This is what makes the UI work from a laptop
     // on the sofa without anybody maintaining a list of the box's addresses,
@@ -184,6 +211,7 @@ bool WsTransport::acceptOrigin(const std::string &originRaw, const std::string &
 
 void WsTransport::onConnected(ConnId id, const std::string &peerAddress, std::uint16_t peerPort)
 {
+    trackUnauthenticated(id);
     writeLog(LogLevel::Info,
              makeCategory(LogCategory::Transport),
              "WS client connected: %1:%2 total=%3",
@@ -199,6 +227,7 @@ void WsTransport::onConnected(ConnId id, const std::string &peerAddress, std::ui
 void WsTransport::onDisconnected(ConnId id)
 {
     m_sessions.erase(id);
+    m_unauthenticatedSince.erase(id);
     for (auto it = m_pendingCommands.begin(); it != m_pendingCommands.end();) {
         if (it->second.conn == id)
             it = m_pendingCommands.erase(it);
@@ -252,6 +281,39 @@ void WsTransport::onTextMessage(ConnId id, std::string_view message)
     // cost side of the text boundary, and it sits on the command path rather than on
     // the event path.
     handleCommand(id, *cid, topic, requestClientId, requestAuthToken, payload.dump());
+}
+
+void WsTransport::onRefused(const std::string &peerAddress, std::string_view reason)
+{
+    ++m_refusalsSinceLog;
+    const std::int64_t now = wallClockMs();
+    if (m_lastRefusalLogMs > 0 && now - m_lastRefusalLogMs < kRefusalLogIntervalMs)
+        return;
+    writeLog(LogLevel::Warn,
+             makeCategory(LogCategory::Security),
+             "Closed a WebSocket connection from %1: %2 (%3 since the last report)",
+             {Scalar{peerAddress}, Scalar{std::string(reason)},
+              Scalar{static_cast<std::int64_t>(m_refusalsSinceLog)}},
+             "ws.connectionRefused",
+             jsonObject({{"peerAddress", jsonQuoted(peerAddress)},
+                         {"reason", jsonQuoted(std::string(reason))},
+                         {"count", std::to_string(m_refusalsSinceLog)}}));
+    m_lastRefusalLogMs = now;
+    m_refusalsSinceLog = 0;
+}
+
+void WsTransport::trackUnauthenticated(ConnId id)
+{
+    if (m_unauthenticatedSince.size() >= kMaxUnauthenticated) {
+        const auto oldest = std::min_element(m_unauthenticatedSince.begin(), m_unauthenticatedSince.end(),
+                                             [](const auto &a, const auto &b) { return a.second < b.second; });
+        const ConnId evicted = oldest->first;
+        m_unauthenticatedSince.erase(oldest);
+        onRefused(std::string(), "too many connections without a login");
+        // 1013: try again later.
+        m_server.closeConnection(evicted, 1013, "Too many connections without a login");
+    }
+    m_unauthenticatedSince[id] = wallClockMs();
 }
 
 bool WsTransport::isConfigValid(const Json &config, std::string *errorString)
@@ -309,7 +371,8 @@ void WsTransport::trackAuthOutcome(ConnId id,
                                    std::string_view responsePayloadJson)
 {
     if (topic == "sync.auth.logout.set") {
-        m_sessions.erase(id);
+        if (m_sessions.erase(id) > 0)
+            trackUnauthenticated(id);
         return;
     }
 
@@ -340,6 +403,7 @@ void WsTransport::trackAuthOutcome(ConnId id,
         session.idleBudgetMs = idleBudgetMs;
         session.lastActivityMs = now;
         m_sessions[id] = std::move(session);
+        m_unauthenticatedSince.erase(id);
         return;
     }
 
@@ -353,7 +417,33 @@ void WsTransport::trackAuthOutcome(ConnId id,
         session.idleBudgetMs = idleBudgetMs;
         session.lastActivityMs = now;
         m_sessions[id] = std::move(session);
+        m_unauthenticatedSince.erase(id);
     }
+}
+
+std::vector<std::string> WsTransport::allowedHostsFromConfig(const Json &config,
+                                                           const std::vector<std::string> &origins)
+{
+    std::vector<std::string> hosts;
+    if (config.is_object()) {
+        const auto it = config.find("allowedHosts");
+        if (it != config.end() && it->is_array()) {
+            for (const Json &entry : *it) {
+                if (!entry.is_string())
+                    continue;
+                std::string host = phi::str::toLower(phi::str::trimmed(entry.get<std::string>()));
+                if (!host.empty())
+                    hosts.push_back(std::move(host));
+            }
+        }
+    }
+    // An origin the household allowed is a name it reaches the box under.
+    for (const std::string &origin : origins) {
+        std::string host = originpolicy::hostOf(originpolicy::authority(origin));
+        if (!host.empty())
+            hosts.push_back(std::move(host));
+    }
+    return hosts;
 }
 
 std::string WsTransport::hostFromConfig(const Json &config)
@@ -452,6 +542,18 @@ void WsTransport::dropIdleSessions()
             continue;
         if (now - entry.second.lastActivityMs > entry.second.idleBudgetMs)
             expired.emplace_back(entry.first, entry.second);
+    }
+
+    // Connections that never logged in, past the deadline for doing so.
+    std::vector<ConnId> lingering;
+    for (const auto &entry : m_unauthenticatedSince) {
+        if (now - entry.second > kLoginTimeoutMs)
+            lingering.push_back(entry.first);
+    }
+    for (const ConnId id : lingering) {
+        m_unauthenticatedSince.erase(id);
+        onRefused(std::string(), "no login in time");
+        m_server.closeConnection(id, 1008, "Login timeout");
     }
 
     for (const auto &[id, session] : expired) {

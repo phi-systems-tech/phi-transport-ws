@@ -103,12 +103,48 @@ void testWhatAnOriginNames()
 
 } // namespace
 
+void testRebindingIsRefused()
+{
+    // DNS rebinding: a public name re-pointed at the box. Origin and Host agree,
+    // so only the name itself gives it away.
+    CHECK(isSameHost("http://evil.example.com", "evil.example.com"));
+    CHECK(!isRebindSafeHost("evil.example.com", {}));
+    CHECK(!isRebindSafeHost("evil.example.com:5040", {}));
+    CHECK(!isRebindSafeHost("local.evil.com", {}));
+    CHECK(!isRebindSafeHost("127.example.com", {}));
+    CHECK(!isRebindSafeHost("", {}));
+    // Unless the household listed it - a box behind its own domain.
+    CHECK(isRebindSafeHost("home.example.com", {"home.example.com"}));
+    CHECK(isRebindSafeHost("Home.Example.com:443", {" home.example.com "}));
+    CHECK(!isRebindSafeHost("other.example.com", {"home.example.com"}));
+}
+
+void testLocalNamesAreLetIn()
+{
+    CHECK(isRebindSafeHost("192.168.18.2", {}));
+    CHECK(isRebindSafeHost("192.168.18.2:5040", {}));
+    CHECK(isRebindSafeHost("[fd00::1]:8080", {}));
+    CHECK(isRebindSafeHost("[::1]", {}));
+    CHECK(isRebindSafeHost("localhost:5040", {}));
+    CHECK(isRebindSafeHost("magic-home.local", {}));
+    CHECK(isRebindSafeHost("PI5.LOCAL.", {}));
+    CHECK(isRebindSafeHost("taifun", {}));
+    CHECK(isRebindSafeHost("box.home.arpa", {}));
+    CHECK(isRebindSafeHost("box.lan", {}));
+    CHECK(!isRebindSafeHost("1.2.3", {})); // a dotted name, not an address: public
+    CHECK(!isAddressLiteral("1.2.3"));
+    CHECK(!isAddressLiteral("256.1.1.1"));
+    CHECK(isAddressLiteral("10.0.0.1"));
+}
+
 int main()
 {
     testThePageTheBoxServedIsLetIn();
     testEverybodyElseIsRefused();
     testTheMachineTalkingToItself();
     testWhatAnOriginNames();
+    testRebindingIsRefused();
+    testLocalNamesAreLetIn();
 
     if (g_failures > 0) {
         std::fprintf(stderr, "origin_tests: %d failure(s)\n", g_failures);

@@ -11,8 +11,10 @@
 
 #include <phi/runtime/str.h>
 
+#include <cctype>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace phicore::transport::ws::originpolicy {
 
@@ -119,6 +121,83 @@ inline bool isLoopback(const std::string &origin)
     if (host == "localhost" || host == "::1")
         return true;
     return isIpv4Loopback(host); // 127.0.0.0/8
+}
+
+/** True when `host` is an IPv4 or IPv6 address literal (IPv6 without brackets). */
+inline bool isAddressLiteral(const std::string &host)
+{
+    if (host.empty())
+        return false;
+    if (host.find(':') != std::string::npos) {
+        // IPv6: hex digits, colons, and an embedded IPv4 tail or a zone.
+        for (const char c : host) {
+            if (!(std::isxdigit(static_cast<unsigned char>(c)) || c == ':' || c == '.' || c == '%'))
+                return false;
+        }
+        return true;
+    }
+    std::size_t pos = 0;
+    for (int octet = 0; octet < 4; ++octet) {
+        int value = 0;
+        int digits = 0;
+        while (pos < host.size() && std::isdigit(static_cast<unsigned char>(host[pos]))) {
+            value = value * 10 + (host[pos] - '0');
+            ++pos;
+            if (++digits > 3 || value > 255)
+                return false;
+        }
+        if (digits == 0)
+            return false;
+        if (octet < 3) {
+            if (pos >= host.size() || host[pos] != '.')
+                return false;
+            ++pos;
+        }
+    }
+    return pos == host.size();
+}
+
+/**
+ * A Host header that no stranger's DNS can point at this box.
+ *
+ * The same-host rule above has one blind spot, and it is DNS rebinding: a page
+ * on `evil.example` whose name the attacker then re-points at the box's
+ * address. The browser still believes it is talking to `evil.example`, so the
+ * Origin and the Host header both say that name, they match, and the page is
+ * let in with the house behind it. The Origin cannot tell the two apart; the
+ * name can. What a stranger's DNS cannot answer for is an address literal,
+ * `localhost`, a name with no dot (resolved by the LAN's own resolver through
+ * its search domain), and the names reserved for local networks - `.local`
+ * over mDNS above all, which is how the box is found. Everything else is a
+ * public name and has to be listed: `allowed` holds the names the household
+ * configured, `allowedHosts` and the hosts of its `allowedOrigins`.
+ *
+ * `hostHeader` is the header verbatim (port and IPv6 brackets included).
+ */
+inline bool isRebindSafeHost(const std::string &hostHeader, const std::vector<std::string> &allowed)
+{
+    const std::string host = hostOf(lowered(trimmed(hostHeader)));
+    if (host.empty())
+        return false;
+    if (isAddressLiteral(host) || host == "localhost")
+        return true;
+    std::string name = host;
+    if (name.back() == '.')
+        name.pop_back(); // the absolute form names the same thing
+    if (name.find('.') == std::string::npos)
+        return true;
+    static constexpr std::string_view kLocalSuffixes[] = {
+        ".local", ".localhost", ".lan", ".home", ".home.arpa", ".internal", ".localdomain",
+    };
+    for (const std::string_view suffix : kLocalSuffixes) {
+        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+            return true;
+    }
+    for (const std::string &entry : allowed) {
+        if (lowered(trimmed(entry)) == name)
+            return true;
+    }
+    return false;
 }
 
 } // namespace phicore::transport::ws::originpolicy

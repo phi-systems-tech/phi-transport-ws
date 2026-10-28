@@ -34,6 +34,10 @@ public:
         std::function<void(ConnId id, const std::string &peerAddress, std::uint16_t peerPort)> connected;
         std::function<void(ConnId id)> disconnected;
         std::function<void(ConnId id, std::string_view text)> textMessage;
+        /// A connection the server shut on its own account: too many at once,
+        /// a handshake that never finished, a client that stopped reading.
+        /// For the log; the connection is gone when this runs.
+        std::function<void(const std::string &peerAddress, std::string_view reason)> refused;
     };
 
     WsServer() = default;
@@ -56,8 +60,9 @@ public:
     void close();
 
     void sendText(ConnId id, std::string_view text);
-    /// Starts a clean close: close frame now, the socket dies when the peer
-    /// answers or the write drains, whichever the kernel makes of it.
+    /// Starts a clean close: the close frame goes out after whatever is still
+    /// queued, and the socket dies when that has drained or a short deadline
+    /// passed.
     void closeConnection(ConnId id, std::uint16_t code, std::string_view reason);
 
     std::size_t connectionCount() const { return m_conns.size(); }
@@ -72,6 +77,7 @@ private:
         bool open = false;      // handshake done
         bool closed = false;    // torn down, waiting for the deferred reap
         bool sentClose = false;
+        bool draining = false;  // closed, writing out what was queued
         std::string peerAddress;
         std::uint16_t peerPort = 0;
         phi::runtime::FdWatch readWatch;
@@ -80,7 +86,13 @@ private:
         std::string outBuffer;
         std::uint8_t fragmentOpcode = 0;
         std::string fragmentBuffer;
+        /// Until the WebSocket handshake is done; then the transport's rules.
+        phi::runtime::Timer handshakeDeadline;
+        phi::runtime::Timer drainDeadline;
     };
+
+    enum class Drain { No, Yes };
+    enum class Flush { Done, Pending, Failed };
 
     void acceptConnections();
     void onReadable(Conn *conn);
@@ -90,10 +102,16 @@ private:
     void handleControlFrame(Conn *conn, std::uint8_t opcode, std::string_view payload);
     void sendFrame(Conn *conn, std::uint8_t opcode, std::string_view payload);
     void failConnection(Conn *conn, std::uint16_t code, std::string_view reason);
+    Flush writeOut(Conn *conn);
     void flushConn(Conn *conn);
     /// Deferred teardown: may run inside one of the connection's own watch
-    /// callbacks, so the watches die on the next loop turn.
-    void dropConn(Conn *conn);
+    /// callbacks, so the watches die on the next loop turn. With Drain::Yes
+    /// the bytes still queued go out first - a close frame, the last answer.
+    void dropConn(Conn *conn, Drain drain);
+    void finishDrain(ConnId id);
+    void reap(std::shared_ptr<Conn> conn);
+    void refuse(const std::string &peerAddress, std::string_view reason);
+    std::size_t handshakingCount() const;
 
     phi::runtime::Loop *m_loop = nullptr;
     int m_listenFd = -1;
@@ -102,6 +120,8 @@ private:
     Callbacks m_callbacks;
     ConnId m_nextId = 1;
     std::map<ConnId, std::shared_ptr<Conn>> m_conns;
+    /// Connections already closed that still write out their last bytes.
+    std::map<ConnId, std::shared_ptr<Conn>> m_draining;
 };
 
 } // namespace phicore::transport::ws

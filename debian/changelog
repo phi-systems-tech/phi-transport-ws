@@ -1,3 +1,10 @@
+phi-transport-ws (0.1.6~git202610281130.9cfdfbc-1) unstable; urgency=medium
+
+  * Rebuild against phi-transport-api 2.2.2 (sync rejection carries
+    params).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 28 Oct 2026 11:30:19 +0100
+
 phi-transport-ws (0.1.6~git202610280927.34c24ac-1) unstable; urgency=medium
 
   * Bound what a LAN client can make the server hold; refuse rebound

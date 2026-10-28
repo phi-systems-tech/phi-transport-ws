@@ -1,3 +1,10 @@
+phi-transport-ws (0.1.6~git202610280927.34c24ac-1) unstable; urgency=medium
+
+  * Bound what a LAN client can make the server hold; refuse rebound
+    names.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 28 Oct 2026 09:27:57 +0100
+
 phi-transport-ws (0.1.6~git202610271409.278df52-1) unstable; urgency=medium
 
   *   * Command frames through phi-transport-api commandframe.h: a

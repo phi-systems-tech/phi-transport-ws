@@ -60,9 +60,10 @@ inline std::string hostOf(const std::string &authorityText)
  *
  * `host` is the Host header of the handshake: the name the browser was told to
  * ask for. If the origin names the same one, the page came from here, whichever
- * of the box's names was used to reach it - its address, `magic-home.local`, or
- * anything else that resolves. A page from somewhere else carries that
- * somewhere else in its origin and can never match, which is the whole point.
+ * of the box's names was used to reach it - its address,
+ * `phi-magic-cfd324.local`, or anything else that resolves. A page from
+ * somewhere else carries that somewhere else in its origin and can never
+ * match, which is the whole point.
  *
  * The scheme is deliberately not compared. Whether the page arrived over TLS is
  * a question for the browser, which already refuses to open a plain socket from

@@ -26,14 +26,14 @@ void testThePageTheBoxServedIsLetIn()
     // However the browser was pointed at the box, the page it got back is the
     // box's own. This is the case that used to need every name in a config
     // file, and the one that left the UI unusable from a laptop.
-    CHECK(isSameHost("http://magic-home.local", "magic-home.local"));
+    CHECK(isSameHost("http://phi-magic-cfd324.local", "phi-magic-cfd324.local"));
     CHECK(isSameHost("http://192.168.1.182", "192.168.1.182"));
-    CHECK(isSameHost("https://magic-home.local", "magic-home.local"));
+    CHECK(isSameHost("https://phi-magic-cfd324.local", "phi-magic-cfd324.local"));
     // A port, when it is not the scheme's default, is part of the name and a
     // browser puts it in both headers.
     CHECK(isSameHost("http://box:8080", "box:8080"));
     // Case is not part of a host name.
-    CHECK(isSameHost("HTTP://Magic-Home.Local", "magic-home.local"));
+    CHECK(isSameHost("HTTP://Phi-Magic-CFD324.Local", "phi-magic-cfd324.local"));
     CHECK(isSameHost("http://box", " box "));
     // IPv6, brackets and all.
     CHECK(isSameHost("http://[fd00::1]", "[fd00::1]"));
@@ -44,23 +44,23 @@ void testEverybodyElseIsRefused()
 {
     // The attack this exists for: a page open in another tab, opening a socket
     // to the box, with whatever the browser has stored for the box attached.
-    CHECK(!isSameHost("http://evil.example.com", "magic-home.local"));
+    CHECK(!isSameHost("http://evil.example.com", "phi-magic-cfd324.local"));
     CHECK(!isSameHost("https://evil.example.com", "192.168.1.182"));
     // A name that merely starts or ends the same is a different name.
-    CHECK(!isSameHost("http://magic-home.local.evil.com", "magic-home.local"));
-    CHECK(!isSameHost("http://notmagic-home.local", "magic-home.local"));
+    CHECK(!isSameHost("http://phi-magic-cfd324.local.evil.com", "phi-magic-cfd324.local"));
+    CHECK(!isSameHost("http://notphi-magic-cfd324.local", "phi-magic-cfd324.local"));
     // Same host, different port: a different origin, and a different server.
     CHECK(!isSameHost("http://box:8080", "box"));
     CHECK(!isSameHost("http://box", "box:8080"));
     // What a sandboxed frame or a file:// page sends. It must match nothing,
     // including a Host header that somehow says the same word.
     CHECK(!isSameHost("null", "null"));
-    CHECK(!isSameHost("null", "magic-home.local"));
+    CHECK(!isSameHost("null", "phi-magic-cfd324.local"));
     // Schemes that are not the web's.
     CHECK(!isSameHost("ws://box", "box"));
     CHECK(!isSameHost("file://", "box"));
     // Nothing on either side is not a match either.
-    CHECK(!isSameHost("", "magic-home.local"));
+    CHECK(!isSameHost("", "phi-magic-cfd324.local"));
     CHECK(!isSameHost("http://box", ""));
     CHECK(!isSameHost("", ""));
 }
@@ -74,7 +74,7 @@ void testTheMachineTalkingToItself()
     CHECK(isLoopback("http://127.0.0.1"));
     CHECK(isLoopback("http://127.5.5.5:8080"));
     CHECK(isLoopback("http://[::1]:5040"));
-    CHECK(!isLoopback("http://magic-home.local"));
+    CHECK(!isLoopback("http://phi-magic-cfd324.local"));
     // Not loopback: names that merely begin with the digits, and things that
     // are not four octets. `127.example.com` is registrable.
     CHECK(!isLoopback("http://127.example.com"));
@@ -126,7 +126,7 @@ void testLocalNamesAreLetIn()
     CHECK(isRebindSafeHost("[fd00::1]:8080", {}));
     CHECK(isRebindSafeHost("[::1]", {}));
     CHECK(isRebindSafeHost("localhost:5040", {}));
-    CHECK(isRebindSafeHost("magic-home.local", {}));
+    CHECK(isRebindSafeHost("phi-magic-cfd324.local", {}));
     CHECK(isRebindSafeHost("PI5.LOCAL.", {}));
     CHECK(isRebindSafeHost("taifun", {}));
     CHECK(isRebindSafeHost("box.home.arpa", {}));
